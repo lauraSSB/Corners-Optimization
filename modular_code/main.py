@@ -26,9 +26,9 @@ def main():
         print("\nNo se encontraron corners. Verifica los IDs de competición y temporada.")
         return
 
-    print(f"\n✓ DataFrame creado con {len(corners)} corners")
+    corners.to_csv('corners_analysis_excel.csv', index=False)
 
-    corners.to_csv('corners_analysis.csv', index=False)
+    print(f"\n✓ DataFrame creado con {len(corners)} corners")
 
 if __name__ == "__main__":
     main()
