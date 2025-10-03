@@ -123,6 +123,23 @@ class Corner:
             y_min=EIGHTEEN_YRDS_BOX_Y_MIN, y_max=EIGHTEEN_YRDS_BOX_Y_MAX
         )
 
+        # 6-yard box counts (always use standard coordinates)
+        self.players_in_6yd_box = self._count_in_box(
+            teammate_filter=None,
+            x_min=SIX_YARD_X_MIN, x_max=SIX_YARD_X_MAX,
+            y_min=SIX_YARD_Y_MIN, y_max=SIX_YARD_Y_MAX
+        )
+        self.attackers_in_6yd_box = self._count_in_box(
+            teammate_filter=True,
+            x_min=SIX_YARD_X_MIN, x_max=SIX_YARD_X_MAX,
+            y_min=SIX_YARD_Y_MIN, y_max=SIX_YARD_Y_MAX
+        )
+        self.defenders_in_6yd_box = self._count_in_box(
+            teammate_filter=False,
+            x_min=SIX_YARD_X_MIN, x_max=SIX_YARD_X_MAX,
+            y_min=SIX_YARD_Y_MIN, y_max=SIX_YARD_Y_MAX
+        )
+
         # Zone counting - mirror zones for BR corners only
         self.zone_counts = self.count_players_in_zones()
 
@@ -138,7 +155,7 @@ class Corner:
         
         # StatsBomb always frames with attacking team left-to-right
         # So corners are only from top-right (TR) or bottom-right (BR)
-        is_top = x > FIELD_WIDTH / 2  # Top half of the field
+        is_top = y > FIELD_WIDTH / 2  # Top half of the field
         
         # Since attacking team is always left-to-right, all corners are on the right side
         # We only need to distinguish between top and bottom
@@ -284,7 +301,7 @@ class Corner:
             "attackers_in_18yd_box": self.attackers_in_18yd_box,
             "defenders_in_18yd_box": self.defenders_in_18yd_box,
             "players_in_6yd_box": self.players_in_6yd_box,
-            "attackers_in_6yd_box": self.attackers_in 6yd_box,
+            "attackers_in_6yd_box": self.attackers_in_6yd_box,
             "defenders_in_6yd_box": self.defenders_in_6yd_box,
             
             # Corner side (only TR or BR)

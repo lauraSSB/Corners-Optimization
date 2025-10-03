@@ -95,7 +95,7 @@ class CornerAnalyzer:
                         if not frames.empty and 'id' in frames.columns:
                             # Create frames dictionary by event_id
                             frames_dict = frames.groupby('id').apply(
-                                lambda x: x[['location', 'teammate', 'player']].to_dict('records')
+                                lambda x: x[['location', 'teammate']].to_dict('records')
                             ).to_dict()
                             print(f"  - {len(frames_dict)} freeze frames available")
 
@@ -132,6 +132,7 @@ class CornerAnalyzer:
                         end_location=tuple(end_location) if end_location and len(end_location) >= 2 else None,
                         pass_outcome=event.get('pass_outcome', 'Complete'),
                         pass_height=event.get('pass_height', 'Unknown'),
+                        pass_length=event.get('pass_length', 'Unknown'),
                         pass_type=event.get('pass_type', 'Corner'),
                         body_part=event.get('pass_body_part', 'Unknown'),
                         play_pattern=event.get('play_pattern', 'Unknown'),
