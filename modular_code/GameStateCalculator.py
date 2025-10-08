@@ -84,6 +84,6 @@ class GameStateCalculator:
         df['game_state'] = df.groupby('match_id')['goal_delta'].cumsum().shift(fill_value=0)
 
         # Clean up temporary columns
-        df = df.drop(columns=['ts', 'home_goal_evt', 'away_goal_evt', 'goal_delta'], errors='ignore')
+        df = df.drop(columns=['home_goal_evt', 'away_goal_evt', 'goal_delta'], errors='ignore')
 
         return df

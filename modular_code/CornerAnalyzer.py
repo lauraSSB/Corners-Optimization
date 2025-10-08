@@ -82,10 +82,10 @@ class CornerAnalyzer:
                     pass_outcome=event.get('pass_outcome', 'Complete'),
                     pass_height=event.get('pass_height', 'Unknown'),
                     pass_length=event.get('pass_length', 'Unknown'),
+                    pass_technique = event.get('pass_technique', 'Unknown'),
                     pass_type=event.get('pass_type', 'Corner'),
                     body_part=event.get('pass_body_part', 'Unknown'),
                     play_pattern=event.get('play_pattern', 'Unknown'),
-                    under_pressure=event.get('under_pressure', False),
                     recipient=event.get('pass_recipient', None),
                     related_events=event.get('related_events', []),
                     freeze_frame=freeze_frame
@@ -107,7 +107,8 @@ class CornerAnalyzer:
             # Extract only the specific columns you want to incorporate
             additional_columns = processed_events_df.loc[
                 processed_events_df['id'].isin(corner_ids),
-                ['id', 'game_state', 'corner_execution_time_raw', 'corner_execution_time_label']
+                ['id', 'game_state', 'corner_execution_time_raw', 'corner_execution_time_label',
+                'match_date', 'home_team', 'away_team', 'xg_20s', 'xg_20s_def', 'goal_20s', 'goal_20s_def']
             ]
             
             # Simple merge without suffixes - just add the specific columns
@@ -123,12 +124,6 @@ class CornerAnalyzer:
                 self.corners_df = self.corners_df.drop(columns=['id'])
             
             print(f"Successfully analyzed {len(self.corners_df)} corner kicks")
-            print("Analysis includes:")
-            print("- Zone distribution data")
-            print("- Player positioning in 6yd and 18yd boxes") 
-            print("- Game state at time of corner")
-            print("- Corner execution time")
-            print("- Corner side (TR/BR)")
             
             return self.corners_df
         else:
