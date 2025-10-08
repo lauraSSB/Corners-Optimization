@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Any
 from functools import lru_cache
 
+from DataDownloader import DataDownloader
+
 warnings.filterwarnings('ignore')
 load_dotenv()
 
@@ -70,24 +72,24 @@ class Corner:
 
     # Raw event fields
     match_id: int
-    event_id: int
+    event_id: str
     team: str
     player: str
     minute: int
     second: int
     period: int
-    location: Optional[Tuple[float, float]]
-    end_location: Optional[Tuple[float, float]]
-    pass_outcome: Optional[str]
-    pass_height: Optional[int]
-    pass_length: Optional[int]
-    pass_technique: Optional[str]
-    pass_type: Optional[str]
-    body_part: Optional[str]
-    play_pattern: Optional[str]
-    recipient: Optional[str]
-    related_events: Optional[List[Any]]
-    freeze_frame: Optional[List[Dict[str, Any]]]
+    location: Optional[Tuple[float, float]] = None
+    end_location: Optional[Tuple[float, float]] = None
+    pass_outcome: Optional[str] = None
+    pass_height: Optional[int] = None
+    pass_length: Optional[int] = None
+    pass_technique: Optional[str] = None
+    pass_type: Optional[str] = None
+    body_part: Optional[str] = None
+    play_pattern: Optional[str]= None
+    recipient: Optional[str]= None
+    related_events: Optional[List[Any]]= None
+    freeze_frame: Optional[List[Dict[str, Any]]]= None
 
     # Zone counting fields (auto-filled in __post_init__)
     defenders_in_18yd_box: int = field(init=False, default=0)
@@ -274,6 +276,53 @@ class Corner:
                     return loc[0], loc[1]
         return None, None
 
+    def get_P1_infomation(self):
+        """Get information of the next event"""
+        downloader = DataDownloader()
+
+        p1_event = downloader.get_next_related_event(self.match_id, self.event_id)
+        event_id_p1 = p1_event.get('id', '')
+        match_id_p1 = p1_event.get('match_id')
+        if not p1_event:
+            return {}
+
+        else:
+            frames_dict = downloader.get_match_frames(self.match_id)
+            freeze_frame = frames_dict.get(event_id_p1, [])
+
+            corner = Corner(
+                match_id=match_id_p1,
+                event_id=event_id_p1,
+                team=p1_event.get('team', ''),
+                player=p1_event.get('player', ''),
+                minute=p1_event.get('minute', 0),
+                second=p1_event.get('second', 0),
+                period=p1_event.get('period', 1),
+                freeze_frame=freeze_frame
+            )
+
+            print(corner.to_dict_t1_event())
+            return corner.to_dict_t1_event()
+
+    def to_dict_t1_event(self):
+        """Convert the event p1 of the corner into a flat dictionary for DataFrames"""
+        gk_x, gk_y = self._get_goalkeeper_coordinates()
+
+        base_dict = {
+            "P1_n_defenders_in_18yd_box": self.defenders_in_18yd_box,
+            "P1_n_attackers_in_6yd_box": self.attackers_in_6yd_box,
+            "P1_n_attackers_out_6yd_box": self.attackers_out_6yd_box,
+
+            # Goalkeeper coordinates
+            "P1_GK_x": gk_x,
+            "P1_GK_y": gk_y,
+        }
+
+        # Add zone data
+        base_dict.update(self.zones_to_dict())
+
+        return base_dict
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert the corner object into a flat dictionary for DataFrames"""
         # Get goalkeeper coordinates
@@ -318,5 +367,6 @@ class Corner:
 
         # Add zone data
         base_dict.update(self.zones_to_dict())
+        base_dict.update(self.get_P1_infomation())
 
         return base_dict
