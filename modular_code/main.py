@@ -1,42 +1,80 @@
+import pandas as pd
+import warnings
+import os
+from datetime import datetime
+from dotenv import load_dotenv
+
+from DataDownloader import DataDownloader
+from GameStateCalculator import GameStateCalculator
+from TwentySecondMetrics import TwentySecondMetrics
+from TimeToCorner import TimeToCorner
 from CornerAnalyzer import CornerAnalyzer
 
+warnings.filterwarnings('ignore')
+load_dotenv()
 
 def main():
-    """Main function to execute corner analysis"""
+    """Main function to download Liga MX data, calculate game state, corner execution time, and corner analysis"""
 
-    print("CORNER KICK ANALYSIS - STATSBOMB")
+    try:
+        downloader = DataDownloader()
+        game_state_calculator = GameStateCalculator()
+        twenty_second_metrics = TwentySecondMetrics()
+        time_to_corner = TimeToCorner()
+        corner_analyzer = CornerAnalyzer(downloader)
 
-    analyzer = CornerAnalyzer()
+        comps = downloader.get_competitions()
+        comp_id = comps.iloc[0]['competition_id']
+        season_id = comps.iloc[0]['season_id']
 
-    print("\n--- STEP 1: Getting available competitions ---")
-    comps = analyzer.get_competitions()
-    print(comps)
+        matches_df = downloader.get_matches(comp_id, season_id)
+        all_corner_analysis = []
 
-    competition_id = int(input("\nEnter competition_id: "))
-    season_id = int(input("Enter season_id: "))
+        max_matches = min(5, len(matches_df))
 
-    corners = analyzer.extract_corners_from_season(
-        competition_id=competition_id,
-        season_id=season_id
-    )
+        print(f"Processing {max_matches} matches...")
 
-    if corners.empty:
-        print("\nNo corners found. Check competition and season IDs.")
-        return
+        for i, match_row in matches_df.head(max_matches).iterrows():
+            match_id = match_row['match_id']
+            match_name = match_row.get('match_name', f'Match {match_id}')
+            print(f"Processing: {match_name}")
 
-    print(f"\n✓ DataFrame created with {len(corners)} corners")
+            events_df = downloader.get_match_events(match_id)
 
-    # Show summary statistics
-    analyzer.get_summary_stats()
-  
-    # Show zone distribution analysis
-    analyzer.analyze_zone_distribution()
-  
-    # Save to CSV
-    analyzer.save_to_csv()
-  
-    # Show corner distribution chart
-    analyzer.plot_corner_distribution()
+            # Calculate game state
+            events_with_state = game_state_calculator.calculate_game_state(events_df, matches_df)
+
+            # Calculate 20-second metrics after corners
+            events_with_20s_metrics = twenty_second_metrics.calculate_20s_metrics(events_with_state)
+
+            # Calculate corner execution time
+            events_with_corner_time = time_to_corner.calculate_corner_execution_time(events_with_20s_metrics)
+
+            # Perform corner analysis on this match's data
+            corner_analysis_df = corner_analyzer.analyze_corners_from_processed_data(events_with_corner_time)
+          
+            if not corner_analysis_df.empty:
+                all_corner_analysis.append(corner_analysis_df)
+                print(f"Found {len(corner_analysis_df)} corner events")
+            else:
+                print(f"No corner events found in this match")
+
+        if all_corner_analysis:
+            combined_corners = pd.concat(all_corner_analysis, ignore_index=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # Save the unified final DataFrame with only corner events and zone data
+            unified_filename = f"unified_corner_analysis_{timestamp}.csv"
+            combined_corners.to_csv(unified_filename, index=False)
+
+        else:
+            print("No corner events were found in any match")
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
