@@ -55,3 +55,25 @@ class DataDownloader:
             return {}
         except Exception:
             return {}
+
+    def get_next_related_event(self, match_id: int, event_id: str) -> Dict:
+        """Get next related event for a specific event_id"""
+        try:
+            events = sb.events(
+                match_id=match_id,
+                creds={'user': self.username, 'passwd': self.password},
+                fmt='dataframe'
+            )
+
+            mask = events["related_events"].apply(lambda v: isinstance(v, list) and event_id in v)
+            related_events = events.loc[mask].copy()
+
+            if related_events.empty:
+                return {}
+
+            related_events = related_events.sort_values(by="timestamp").reset_index(drop=True)
+            return related_events.iloc[0].to_dict()
+
+        except Exception as e:
+            print(type(e).__name__, ":", e)
+            return {}
