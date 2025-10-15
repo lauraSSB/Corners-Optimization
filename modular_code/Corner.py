@@ -301,7 +301,6 @@ class Corner:
                 freeze_frame=freeze_frame
             )
 
-            print(corner.to_dict_t1_event())
             return corner.to_dict_t1_event()
 
     def to_dict_t1_event(self):
