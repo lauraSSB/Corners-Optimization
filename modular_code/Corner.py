@@ -136,7 +136,7 @@ class Corner:
 
         # Since attacking team is always left-to-right, all corners are on the right side
         # We only need to distinguish between top and bottom
-        return "TR" if is_top else "BR"
+        return "Left" if is_top else "Right"
 
     def _count_in_box(
         self,
