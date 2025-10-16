@@ -27,7 +27,7 @@ class GameStateCalculator:
         matches = matches_df.copy()
 
         # Get available columns from matches dataframe
-        available_columns = ['match_id', 'home_team', 'away_team', 'match_date']
+        available_columns = ['match_id', 'home_team', 'away_team', 'match_date', 'season']
 
         # First, merge to get available match metadata
         df = events.merge(
@@ -39,8 +39,11 @@ class GameStateCalculator:
         # Proper chronological sorting
         df = self._sort_events_chronologically(df)
 
-        # Calculate game state using the simple and reliable approach
+        # Calculate game state 
         df = self._calculate_game_state_simple(df)
+
+        # Derive pass type based on other columns and pass length
+        df = self._fill_pass_technique_na(df)
 
         return df
 
@@ -65,7 +68,7 @@ class GameStateCalculator:
         return df
 
     def _calculate_game_state_simple(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate game state using the simple and reliable approach"""
+        """Calculate game state"""
         # Per event goal deltas from the home perspective
 
         df['home_goal_evt'] = (
@@ -85,5 +88,34 @@ class GameStateCalculator:
 
         # Clean up temporary columns
         df = df.drop(columns=['home_goal_evt', 'away_goal_evt', 'goal_delta'], errors='ignore')
+
+        return df
+
+
+    def _fill_pass_technique_na(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Fill ONLY NaNs in pass_technique using:
+          - 'Cutback' if pass_cut_back is True (overrides others)
+          - else 'Short' if pass_length <= 10
+          - else 'Ground'
+        Existing non-null values (e.g., Inswing/Outswing) are preserved.
+        """
+
+        df = df.copy()
+
+        # Work only on rows where pass_technique is NaN
+        na_mask = df['pass_technique'].isna()
+
+        # Coerce helpers
+        length  = pd.to_numeric(df.get('pass_length'), errors='coerce')
+
+        # Default fills for NA rows
+        df.loc[na_mask, 'pass_technique'] = 'Ground'
+        df.loc[na_mask & length.le(10, fill_value=False), 'pass_technique'] = 'Short'
+
+        # Cutback overrides IF the column exists; otherwise skip silently
+        if 'pass_cut_back' in df.columns:
+            cutback = df['pass_cut_back'].fillna(False).astype(bool)
+            df.loc[na_mask & cutback, 'pass_technique'] = 'Cutback'
 
         return df
