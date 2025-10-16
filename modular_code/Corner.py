@@ -321,12 +321,12 @@ class Corner:
         downloader = DataDownloader()
 
         p1_event = downloader.get_next_related_event(self.match_id, self.event_id)
-        event_id_p1 = p1_event.get('id', '')
-        match_id_p1 = p1_event.get('match_id')
         if not p1_event:
             return {}
 
         else:
+            event_id_p1 = p1_event.get('id', '')
+            match_id_p1 = p1_event.get('match_id')
             frames_dict = downloader.get_match_frames(self.match_id)
             freeze_frame = frames_dict.get(event_id_p1, [])
 
