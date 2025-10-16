@@ -57,12 +57,21 @@ class DataDownloader:
             return {}
 
     def get_next_related_event(self, match_id: int, event_id: str) -> Dict:
-        """Get next related event for a specific event_id"""
+        """
+           Returns the first related event that occurs at the same timestamp as the next group of related events
+           and has an available freeze_frame in the 360° data for the specified match.
+        """
         try:
             events = sb.events(
                 match_id=match_id,
                 creds={'user': self.username, 'passwd': self.password},
                 fmt='dataframe'
+            )
+
+            frames = sb.frames(
+                match_id=match_id,
+                creds={'user': self.username, 'passwd': self.password},
+                fmt='dict'
             )
 
             mask = events["related_events"].apply(lambda v: isinstance(v, list) and event_id in v)
@@ -72,7 +81,14 @@ class DataDownloader:
                 return {}
 
             related_events = related_events.sort_values(by="timestamp").reset_index(drop=True)
-            return related_events.iloc[0].to_dict()
+            first_ts = related_events.iloc[0]["timestamp"]
+            same_ts_events = related_events[related_events["timestamp"] == first_ts]
+            frames_ids = [f["event_uuid"] for f in frames if "event_uuid" in f]
+
+            for _, row in same_ts_events.iterrows():
+                if row["id"] in frames_ids:
+                    return row.to_dict()
+
 
         except Exception as e:
             print(type(e).__name__, ":", e)
