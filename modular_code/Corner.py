@@ -26,7 +26,7 @@ SIX_YARD_Y_MAX = 44
 
 def _flip_rect(rect: Tuple[float, float, float, float, str],
                flip_y: bool = False) -> Tuple[float, float, float, float, str]:
-    """Flip rectangle coordinates vertically for BR corners"""
+    """Flip rectangle coordinates vertically for Left corners """
     xmin, xmax, ymin, ymax, name = rect
     if flip_y:
         # Mirror vertically (y-axis flip only)
@@ -35,9 +35,9 @@ def _flip_rect(rect: Tuple[float, float, float, float, str],
     ymin, ymax = min(ymin, ymax), max(ymin, ymax)
     return (xmin, xmax, ymin, ymax, name)
 
-@lru_cache(maxsize=2)  # Only need TR and BR zones
-def corner_zones(corner: str = "TR") -> List[Tuple[float, float, float, float, str]]:
-    """Predefined corner zones - only TR and BR corners exist in StatsBomb"""
+@lru_cache(maxsize=2)  # Only need Right and Left zones
+def corner_zones(corner: str = "Right") -> List[Tuple[float, float, float, float, str]]:
+    """Predefined corner zones - only Right and Left corners exist in StatsBomb"""
     base_zones = [
         (114, 120, 30, 36, "Near-post low (6yd)"),    # 1
         (114, 120, 36, 44, "Central (6yd/GK)"),    # 2
@@ -52,23 +52,23 @@ def corner_zones(corner: str = "TR") -> List[Tuple[float, float, float, float, s
         (102, 108, 50, 62, "Short return – far"),    # 11
         (114, 120, 18, 30, "Short return – central"),   # 12
         (114, 120, 50, 62, "Far-post low (6yd, mid-height)"),    # 13
-        (102, 120, 0, 18, "Advanced wide return (touchline channel)"),   # 14
+        (102, 121, -1, 18, "Advanced wide return (touchline channel)"),   # 14
     ]
 
-    # Only BR corners need vertical mirroring
-    # TR corners: no flipping needed (zones are already correct)
-    # BR corners: flip vertically only (y-axis mirror)
-    flip_y = corner == "BR"
+    # Only Left corners need vertical mirroring
+    # Right corners: no flipping needed (zones are already correct)
+    # Left corners: flip vertically only (y-axis mirror)
+    flip_y = corner == "Left"
 
     return [_flip_rect(r, flip_y=flip_y) for r in base_zones]
 
 def _is_in_box(x: float, y: float, x_min: float, x_max: float, y_min: float, y_max: float) -> bool:
     """Check if coordinates are within a rectangular box"""
-    return x_min<= x <= x_max and y_min <= y <= y_max
+    return x_min <= x <= x_max and y_min <= y <= y_max
 
 @dataclass
 class Corner:
-    '''Optimized Corner class with proper zone mirroring for TR/BR corners only'''
+    '''Optimized Corner class with proper zone mirroring for Right/Left corners only'''
 
     # Raw event fields
     match_id: int
@@ -101,44 +101,72 @@ class Corner:
 
     def __post_init__(self) -> None:
         """Initialize derived attributes"""
-        # Determine actual corner side (only TR or BR exist)
+        # Determine actual corner side (only Right or Left exist)
         self.corner_side = self._determine_corner_side()
 
         self.defenders_in_18yd_box = self._count_in_box(
             teammate_filter=False,
-            x_min=EIGHTEEN_YRDS_BOX_X_MIN, x_max=EIGHTEEN_YRDS_BOX_X_MAX,
-            y_min=EIGHTEEN_YRDS_BOX_Y_MIN, y_max=EIGHTEEN_YRDS_BOX_Y_MAX,
+            x_min=EIGHTEEN_YRDS_BOX_X_MIN, 
+            x_max=EIGHTEEN_YRDS_BOX_X_MAX,
+            y_min=EIGHTEEN_YRDS_BOX_Y_MIN, 
+            y_max=EIGHTEEN_YRDS_BOX_Y_MAX,
             exclude_goalkeeper=True
         )
 
         self.attackers_in_6yd_box = self._count_in_box(
             teammate_filter=True,
-            x_min=SIX_YARD_X_MIN, x_max=SIX_YARD_X_MAX,
-            y_min=SIX_YARD_Y_MIN, y_max=SIX_YARD_Y_MAX
+            x_min=SIX_YARD_X_MIN, 
+            x_max=SIX_YARD_X_MAX,
+            y_min=SIX_YARD_Y_MIN, 
+            y_max=SIX_YARD_Y_MAX
         )
 
         self.attackers_out_6yd_box = self._count_out_box()
 
-        # Zone counting - mirror zones for BR corners only
+        # Zone counting - mirror zones for Left corners only
         self.zone_counts = self.count_players_in_zones()
 
     def _determine_corner_side(self) -> str:
         """
         Determines from which corner the corner is executed
-        Only TR or BR corners exist in StatsBomb (attacking left-to-right)
+        Only Right or Left corners exist in StatsBomb (attacking left-to-right)
         """
         if not self.location or self.location[0] is None:
-            return "TR"
+            return "Right"
 
         x, y = self.location
 
         # StatsBomb always frames with attacking team left-to-right
         # So corners are only from top-right (TR) or bottom-right (BR)
-        is_top = y > FIELD_HEIGHT / 2  # Use FIELD_HEIGHT for y-coordinate comparison
+        is_top = y < FIELD_HEIGHT / 2  # Use FIELD_HEIGHT for y-coordinate comparison
 
         # Since attacking team is always left-to-right, all corners are on the right side
         # We only need to distinguish between top and bottom
-        return "TR" if is_top else "BR"
+        return "Right" if is_top else "Left"
+
+    def _iter_freeze_players(self):
+      """Yield player dicts from freeze_frame regardless of nested shape [[{...}]] or [{...}]."""
+      ff = self.freeze_frame
+      if not ff:
+        return
+      # Flatten one level if needed: [[{...}, {...}]] -> [{...}, {...}]
+      if isinstance(ff, list) and len(ff) > 0 and isinstance(ff[0], list):
+            ff = ff[0]
+
+      for p in ff:
+        if isinstance(p, dict):
+          yield p
+
+    @staticmethod
+    def _coerce_bool(v) -> bool:
+      """Robust boolean coercion for fields that may be True/False/1/0/'true'/'false'/etc."""
+      if isinstance(v, bool):
+        return v
+      if isinstance(v, (int, float)):
+        return v != 0
+      if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "y", "t")
+      return False
 
     def _count_in_box(
         self,
@@ -158,27 +186,41 @@ class Corner:
         - exclude_goalkeeper    -> exclude any player with keeper=True from ALL counts
         """
         if not self.freeze_frame:
-            return 0
+            return None
 
+        frame = self.freeze_frame
+        if frame and isinstance(frame, list) and len(frame) == 1 and isinstance(frame[0], list):
+          frame = frame[0]
+        
+      
         cnt = 0
-        for player_data in self.freeze_frame:
-            loc = player_data.get("location", None)
+
+        for player_data in self._iter_freeze_players():
+            loc = player_data.get("location")
             if not isinstance(loc, (list, tuple)) or len(loc) < 2:
                 continue
 
-            x, y = float(loc[0]), float(loc[1])
+            try:
+              x, y = float(loc[0]), float(loc[1])
+            except(TypeError, ValueError):
+              continue
+            
             if not _is_in_box(x, y, x_min, x_max, y_min, y_max):
-                continue
+              continue
 
-            # Exclude goalkeeper from defender counts
-            if exclude_goalkeeper and player_data.get("keeper", False):
+            # Robust flags
+            is_keeper = self._coerce_bool(player_data.get("keeper", False))
+            is_teammate = self._coerce_bool(player_data.get("teammate", False))
+
+            # Always honor explicit GK exclusion first
+            if exclude_goalkeeper and is_keeper:
                 continue
 
             if teammate_filter is None:
                 cnt += 1
             else:
-                if bool(player_data.get("teammate", False)) == teammate_filter:
-                    cnt += 1
+              if is_teammate == teammate_filter:
+                cnt += 1
 
         return cnt
 
@@ -191,7 +233,7 @@ class Corner:
 
         cnt = 0
         for player_data in self.freeze_frame:
-            loc = player_data.get("location", None)
+            loc = player_data.get("location")
             if not isinstance(loc, (list, tuple)) or len(loc) < 2:
                 continue
 
@@ -211,13 +253,13 @@ class Corner:
     def count_players_in_zones(self, zones_definition: Optional[List[Tuple]] = None) -> Dict[int, Dict[str, int]]:
         """
         Count players in predefined zones
-        - TR corners: use standard zones
-        - BR corners: mirror zones vertically
+        - Right corners: use standard zones
+        - Left corners: mirror zones vertically
         """
         if not self.freeze_frame:
             return {}
 
-        # Use zones with vertical mirroring for BR corners only
+        # Use zones with vertical mirroring for Left corners only
         zones = zones_definition or corner_zones(self.corner_side)
 
         zones_data = {
@@ -225,27 +267,25 @@ class Corner:
             for idx, (xmin, xmax, ymin, ymax, name) in enumerate(zones, start=1)
         }
 
-        for player_data in self.freeze_frame:
+        for player_data in self._iter_freeze_players():
             loc = player_data.get('location')
             if not isinstance(loc, (list, tuple)) or len(loc) < 2:
                 continue
 
             x, y = loc[0], loc[1]
-            is_teammate = player_data.get('teammate', False)
-            is_keeper = player_data.get('keeper', False)
+            is_teammate = self._coerce_bool(player_data.get('teammate', False))
+            is_keeper = self._coerce_bool(player_data.get('keeper', False))
 
             # Check each zone for player presence
             for zone_id, zone_info in zones_data.items():
-                zone_coords = zones[zone_id - 1]  # Get (possibly mirrored) coordinates
-                xmin, xmax, ymin, ymax, _ = zone_coords
-
+                xmin, xmax, ymin, ymax, _ = zones[zone_id - 1]
                 if _is_in_box(x, y, xmin, xmax, ymin, ymax):
                     zones_data[zone_id]['total'] += 1
                     if is_teammate:
                         zones_data[zone_id]['attackers'] += 1
-                    elif not is_keeper:  # Exclude goalkeeper from defender counts
+                    elif not is_keeper:                            # Exclude GK from defender counts
                         zones_data[zone_id]['defenders'] += 1
-                    break  # Player can only be in one zone
+                    break
 
         return zones_data
 
@@ -360,7 +400,7 @@ class Corner:
             "P0_GK_x": gk_x,
             "P0_GK_y": gk_y,
 
-            # Corner side (only TR or BR)
+            # Corner side (only Right or Left)
             "corner_side": self.corner_side,
         }
 
