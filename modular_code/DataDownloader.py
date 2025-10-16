@@ -50,7 +50,7 @@ class DataDownloader:
 
             if not frames.empty and 'id' in frames.columns:
                 return frames.groupby('id').apply(
-                    lambda x: x[['location', 'teammate']].to_dict('records')
+                    lambda x: x[['location', 'teammate', 'keeper']].to_dict('records')
                 ).to_dict()
             return {}
         except Exception:
