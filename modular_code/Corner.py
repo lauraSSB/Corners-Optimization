@@ -62,7 +62,7 @@ def corner_zones(corner: str = "TR") -> List[Tuple[float, float, float, float, s
 
 def _is_in_box(x: float, y: float, x_min: float, x_max: float, y_min: float, y_max: float) -> bool:
     """Check if coordinates are within a rectangular box"""
-    return x_min<= x <= x_max and y_min <= y <= y_max
+    return x_min <= x <= x_max and y_min <= y <= y_max
 
 @dataclass
 class Corner:
@@ -96,6 +96,7 @@ class Corner:
 
     zone_counts: Dict[int, Dict[str, int]] = field(init=False, default_factory=dict)
     corner_side: str = field(init=False, default="TR")
+    p1_events: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Initialize derived attributes"""
@@ -274,6 +275,163 @@ class Corner:
                     return loc[0], loc[1]
         return None, None
 
+    def _analyze_p1_event(self, p1_event: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze a P1 event and extract player counts and goalkeeper positioning
+        
+        IMPORTANT: This method receives P1 data that was already validated by CornerAnalyzer
+        to be at the immediate next timestamp after P0. We just extract the freeze frame
+        and perform the same analysis as P0.
+        """
+        # Extract the freeze frame that was validated to be at P1 timestamp
+        p1_freeze_frame = p1_event.get('p1_freeze_frame', [])
+        
+        if not p1_freeze_frame:
+            print(f"[DEBUG Corner.py] No freeze frame in P1 event")
+            return {}
+        
+        print(f"[DEBUG Corner.py] Analyzing P1 freeze frame with {len(p1_freeze_frame)} players")
+        
+        # Count players in boxes for P1 event using the P1 freeze frame
+        p1_defenders_in_18yd_box = self._count_in_box_p1(
+            p1_freeze_frame, teammate_filter=False,
+            x_min=EIGHTEEN_YRDS_BOX_X_MIN, x_max=EIGHTEEN_YRDS_BOX_X_MAX,
+            y_min=EIGHTEEN_YRDS_BOX_Y_MIN, y_max=EIGHTEEN_YRDS_BOX_Y_MAX,
+            exclude_goalkeeper=True
+        )
+        
+        p1_attackers_in_6yd_box = self._count_in_box_p1(
+            p1_freeze_frame, teammate_filter=True,
+            x_min=SIX_YARD_X_MIN, x_max=SIX_YARD_X_MAX,
+            y_min=SIX_YARD_Y_MIN, y_max=SIX_YARD_Y_MAX
+        )
+        
+        p1_attackers_out_6yd_box = self._count_out_box_p1(p1_freeze_frame)
+        
+        # Get goalkeeper coordinates for P1
+        p1_gk_x, p1_gk_y = self._get_goalkeeper_coordinates_p1(p1_freeze_frame)
+        
+        # Analyze zones for P1
+        p1_zone_counts = self.count_players_in_zones_p1(p1_freeze_frame)
+        
+        print(f"[DEBUG Corner.py] P1 Analysis - Defenders in 18yd: {p1_defenders_in_18yd_box}, Attackers in 6yd: {p1_attackers_in_6yd_box}")
+        
+        return {
+            "P1_n_defenders_in_18yd_box": p1_defenders_in_18yd_box,
+            "P1_n_attackers_in_6yd_box": p1_attackers_in_6yd_box,
+            "P1_n_attackers_out_6yd_box": p1_attackers_out_6yd_box,
+            "P1_GK_x": p1_gk_x,
+            "P1_GK_y": p1_gk_y,
+            "P1_zone_counts": p1_zone_counts
+        }
+    
+    def _count_in_box_p1(self, freeze_frame, teammate_filter, x_min, x_max, y_min, y_max, exclude_goalkeeper=True):
+        """
+        Count players in box for P1 event
+        This uses the freeze frame that was already validated to be at P1 timestamp
+        """
+        cnt = 0
+        for player_data in freeze_frame:
+            loc = player_data.get("location", None)
+            if not isinstance(loc, (list, tuple)) or len(loc) < 2:
+                continue
+
+            x, y = float(loc[0]), float(loc[1])
+            if not _is_in_box(x, y, x_min, x_max, y_min, y_max):
+                continue
+
+            # Exclude goalkeeper from defender counts
+            if exclude_goalkeeper and player_data.get("keeper", False):
+                continue
+
+            if teammate_filter is None:
+                cnt += 1
+            else:
+                if bool(player_data.get("teammate", False)) == teammate_filter:
+                    cnt += 1
+
+        return cnt
+    
+    def _count_out_box_p1(self, freeze_frame):
+        """Count attackers outside 6yd but inside 18yd box for P1"""
+        cnt = 0
+        for player_data in freeze_frame:
+            loc = player_data.get("location", None)
+            if not isinstance(loc, (list, tuple)) or len(loc) < 2:
+                continue
+
+            x, y = loc[0], loc[1]
+            is_teammate = bool(player_data.get("teammate", False))
+
+            # Count attackers who are in 18-yard box but NOT in 6-yard box
+            if (is_teammate and
+                _is_in_box(x, y, EIGHTEEN_YRDS_BOX_X_MIN, EIGHTEEN_YRDS_BOX_X_MAX,
+                          EIGHTEEN_YRDS_BOX_Y_MIN, EIGHTEEN_YRDS_BOX_Y_MAX) and
+                not _is_in_box(x, y, SIX_YARD_X_MIN, SIX_YARD_X_MAX,
+                              SIX_YARD_Y_MIN, SIX_YARD_Y_MAX)):
+                cnt += 1
+
+        return cnt
+    
+    def _get_goalkeeper_coordinates_p1(self, freeze_frame):
+        """Get goalkeeper coordinates from P1 freeze frame"""
+        for player_data in freeze_frame:
+            if player_data.get("keeper", True):
+                loc = player_data.get("location")
+                if isinstance(loc, (list, tuple)) and len(loc) >= 2:
+                    return loc[0], loc[1]
+        return None, None
+    
+    def count_players_in_zones_p1(self, freeze_frame):
+        """Count players in zones for P1 event"""
+        if not freeze_frame:
+            return {}
+
+        zones = corner_zones(self.corner_side)
+        zones_data = {
+            idx: {'attackers': 0, 'defenders': 0, 'total': 0, 'name': name}
+            for idx, (xmin, xmax, ymin, ymax, name) in enumerate(zones, start=1)
+        }
+
+        for player_data in freeze_frame:
+            loc = player_data.get('location')
+            if not isinstance(loc, (list, tuple)) or len(loc) < 2:
+                continue
+
+            x, y = loc[0], loc[1]
+            is_teammate = player_data.get('teammate', False)
+            is_keeper = player_data.get('keeper', False)
+
+            # Check each zone for player presence
+            for zone_id, zone_info in zones_data.items():
+                zone_coords = zones[zone_id - 1]
+                xmin, xmax, ymin, ymax, _ = zone_coords
+
+                if _is_in_box(x, y, xmin, xmax, ymin, ymax):
+                    zones_data[zone_id]['total'] += 1
+                    if is_teammate:
+                        zones_data[zone_id]['attackers'] += 1
+                    elif not is_keeper:  # Exclude goalkeeper from defender counts
+                        zones_data[zone_id]['defenders'] += 1
+                    break  # Player can only be in one zone
+
+        return zones_data
+    
+    def zones_to_dict_p1(self, zone_counts):
+        """Convert P1 zone counts to flat dictionary"""
+        result = {}
+        for zone_id, data in zone_counts.items():
+            # Skip zone 2 (Central 6yd/GK) as it's redundant with 6-yard box counts
+            if zone_id == 2:
+                continue
+            result.update({
+                f'P1_zone_{zone_id}_name': data['name'],
+                f'P1_n_att_zone_{zone_id}': data['attackers'],
+                f'P1_n_def_zone_{zone_id}': data['defenders'],
+                f'P1_total_n_zone_{zone_id}': data['total']
+            })
+        return result
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert the corner object into a flat dictionary for DataFrames"""
         # Get goalkeeper coordinates
@@ -318,5 +476,23 @@ class Corner:
 
         # Add zone data
         base_dict.update(self.zones_to_dict())
+        
+        # Add P1 data if available (P1 data was already validated by CornerAnalyzer)
+        if self.p1_events:
+            print(f"[DEBUG Corner.py] Processing P1 event for corner {self.event_id}")
+            # Take the first (and should be only) P1 event
+            p1_event = self.p1_events[0]
+            p1_analysis = self._analyze_p1_event(p1_event)
+            
+            # Add P1 analysis to base dict
+            base_dict.update(p1_analysis)
+            
+            # Add P1 zone data
+            if "P1_zone_counts" in p1_analysis:
+                base_dict.update(self.zones_to_dict_p1(p1_analysis["P1_zone_counts"]))
+                # Remove the temporary zone counts key
+                del base_dict["P1_zone_counts"]
+        else:
+            print(f"[DEBUG Corner.py] No P1 events for corner {self.event_id}")
 
         return base_dict
