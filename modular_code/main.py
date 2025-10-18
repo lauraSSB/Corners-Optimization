@@ -10,6 +10,7 @@ from TwentySecondMetrics import TwentySecondMetrics
 from TimeToCorner import TimeToCorner
 from CornerAnalyzer import CornerAnalyzer
 from CornerP1Analyzer import CornerP1Analyzer
+from CornerNextBallLocations import CornerNextBallLocations
 
 warnings.filterwarnings('ignore')
 load_dotenv()
@@ -24,6 +25,7 @@ def main():
         time_to_corner = TimeToCorner()
         corner_analyzer = CornerAnalyzer(downloader)
         p1_analyzer = CornerP1Analyzer(downloader)
+        next_ball_locations = CornerNextBallLocations(downloader)
 
         comps = downloader.get_competitions()
         comp_id = comps.iloc[0]['competition_id']
@@ -70,10 +72,16 @@ def main():
                 if not p0_df.empty:
                     # Perform P1 analysis for this match
                     p1_df = p1_analyzer.analyze_p1_events(events_with_corner_time, corner_analyzer.corners_data)
-                    
-                    # Merge P0 and P1 data
+
                     combined_df = p1_analyzer.merge_p0_p1_data(p0_df, p1_df)
-                    all_corner_analysis.append(combined_df)
+
+                    # Perform next five ball receipts actions analysis for this match
+                    next_ball_locations_df = next_ball_locations.find_next_ball_receipts(combined_df, events_df)
+
+                    final_df = pd.merge(combined_df, next_ball_locations_df, on="event_id", how="left")
+
+                    # Merge P0 and P1 data
+                    all_corner_analysis.append(final_df)
                     
                     print(f"Found {len(p0_df)} corner events, {len(p1_df) if p1_df is not None else 0} P1 events")
                     successful_matches += 1
