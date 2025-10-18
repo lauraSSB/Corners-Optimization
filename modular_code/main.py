@@ -1,6 +1,8 @@
 import pandas as pd
 import warnings
 import os
+import pickle
+import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -14,11 +16,58 @@ from CornerP1Analyzer import CornerP1Analyzer
 warnings.filterwarnings('ignore')
 load_dotenv()
 
+class CachedDataDownloader(DataDownloader):
+    def __init__(self, cache_dir="./statsbomb_cache", *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+    
+    def _get_cache_key(self, endpoint, **params):
+        key_str = f"{endpoint}_{str(params)}"
+        return hashlib.md5(key_str.encode()).hexdigest()
+    
+    def get_match_events(self, match_id: int) -> pd.DataFrame:
+        cache_key = self._get_cache_key("events", match_id=match_id)
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+        
+        # Try cache first
+        if os.path.exists(cache_file):
+            with open(cache_file, 'rb') as f:
+                print(f"✓ Loaded events for match {match_id} from cache")
+                return pickle.load(f)
+        
+        # Fetch from API
+        events = super().get_match_events(match_id)
+        
+        # Cache the result
+        if not events.empty:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(events, f)
+        
+        return events
+    
+    def get_match_frames(self, match_id: int) -> dict:
+        cache_key = self._get_cache_key("frames", match_id=match_id)
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+        
+        if os.path.exists(cache_file):
+            with open(cache_file, 'rb') as f:
+                print(f"✓ Loaded frames for match {match_id} from cache")
+                return pickle.load(f)
+        
+        frames = super().get_match_frames(match_id)
+        
+        if frames:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(frames, f)
+        
+        return frames
+
 def main():
     """Main function to download Liga MX data, calculate game state, corner execution time, and corner analysis"""
 
     try:
-        downloader = DataDownloader()
+        downloader = CachedDataDownloader(cache_dir="./statsbomb_cache")
         game_state_calculator = GameStateCalculator()
         twenty_second_metrics = TwentySecondMetrics()
         time_to_corner = TimeToCorner()
