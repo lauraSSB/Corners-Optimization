@@ -104,43 +104,46 @@ class Corner:
         # Determine actual corner side (only Right or Left exist)
         self.corner_side = self._determine_corner_side()
 
-        self.defenders_in_18yd_box = self._count_in_box(
-            teammate_filter=False,
-            x_min=EIGHTEEN_YRDS_BOX_X_MIN, 
-            x_max=EIGHTEEN_YRDS_BOX_X_MAX,
-            y_min=EIGHTEEN_YRDS_BOX_Y_MIN, 
-            y_max=EIGHTEEN_YRDS_BOX_Y_MAX,
-            exclude_goalkeeper=True
-        )
-
-        self.attackers_in_6yd_box = self._count_in_box(
-            teammate_filter=True,
-            x_min=SIX_YARD_X_MIN, 
-            x_max=SIX_YARD_X_MAX,
-            y_min=SIX_YARD_Y_MIN, 
-            y_max=SIX_YARD_Y_MAX
-        )
-
-        self.attackers_out_6yd_box = self._count_out_box()
-
-        # Zone counting - mirror zones for Left corners only
+        # Calculate zone counts first
         self.zone_counts = self.count_players_in_zones()
 
-    def normalize_coordinates(self, x: float, y: float, is_teammate: bool) -> Tuple[float, float]:
-        """
-        Normalize coordinates to always be from the perspective of the corner-taking team
+        # Now calculate the box counts from zone data
+        self.defenders_in_18yd_box = self._count_defenders_in_18yd_box()
+        self.attackers_in_6yd_box = self._count_attackers_in_6yd_box()
+        self.attackers_out_6yd_box = self._count_attackers_out_6yd_box()
+
+    def _count_defenders_in_18yd_box(self) -> int:
+        """Count defenders in 18-yard box (zones 1-13)"""
+        if not self.zone_counts:
+            return 0
         
-        Only flip coordinates if P1 possession team is different from P0 corner team
-        """
-        # Check if we need to normalize coordinates
-        needs_normalization = self.team != self.p0_corner_team
+        total_defenders = 0
+        # Zones 1-13 are within the 18-yard box (zone 14 is outside)
+        for zone_id in range(1, 14):
+            if zone_id in self.zone_counts:
+                total_defenders += self.zone_counts[zone_id]['defenders']
         
-        if not needs_normalization:
-            # Same possession team - no coordinate adjustment needed
-            return x, y
-        else:
-            # Different possession team - flip coordinates
-            return FIELD_WIDTH - x, FIELD_HEIGHT - y
+        return total_defenders
+
+    def _count_attackers_in_6yd_box(self) -> int:
+        """Count attackers in 6-yard box (zone 2)"""
+        if not self.zone_counts or 2 not in self.zone_counts:
+            return 0
+        return self.zone_counts[2]['attackers']
+
+    def _count_attackers_out_6yd_box(self) -> int:
+        """Count attackers outside 6-yard box but in 18-yard box (zones 1, 3-13)"""
+        if not self.zone_counts:
+            return 0
+        
+        total_attackers = 0
+        # All zones except zone 2 (6-yard box) and zone 14 (outside 18-yard box)
+        for zone_id in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]:
+            if zone_id in self.zone_counts:
+                total_attackers += self.zone_counts[zone_id]['attackers']
+        
+        return total_attackers
+
     
     def _determine_corner_side(self) -> str:
         """
@@ -289,7 +292,7 @@ class Corner:
                 continue
 
             x, y = loc[0], loc[1]
-            is_teammate = self._coerce_bool(player_data.get('teammate', False))
+            is_teammate = self._coerce_bool(player_data.get('teammate'))
             is_keeper = self._coerce_bool(player_data.get('keeper', False))
 
             # Check each zone for player presence
