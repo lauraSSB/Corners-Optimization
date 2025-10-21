@@ -5,66 +5,23 @@ from catboost import CatBoostClassifier, CatBoostRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, mean_squared_error, r2_score, mean_absolute_error, roc_auc_score
 import matplotlib.pyplot as plt
+from DataPreprocessing import data_preprocessing_model
 
 # Loading data
-df = pd.read_csv('liga_mx_2023_2025.csv')
+df, numerical_features, categorical_features = data_preprocessing_model("liga_mx_2023_2025.csv")
 
 df_1 = df.copy()
-
-# Identify feature columns (excluding IDs, timestamps, and target-related columns)
-drop_cols = [
-    'match_id', 'minute', 'second', 'period', 'event_id', 'team', 'player', 'pass_type', 'play_pattern',
-    'recipient', 'P0_index_x', 'P0_index_y','corner_execution_time_raw', 'match_date', 
-    'home_team', 'away_team', 'season', 'P1_event_id', 'P1_index', 'P1_timestamp', 
-    'corner_execution_time_raw', 'zone_1_name', 'P0_total_n_zone_1', 'zone_3_name',
-    'P0_total_n_zone_3', 'zone_4_name', 'P0_total_n_zone_4', 'zone_5_name', 'P0_total_n_zone_5',
-    'zone_6_name', 'P0_total_n_zone_6', 'zone_7_name', 'P0_total_n_zone_7',
-    'zone_8_name', 'P0_total_n_zone_8', 'zone_9_name', 'P0_total_n_zone_9',
-    'zone_10_name', 'P0_total_n_zone_10', 'zone_11_name', 'P0_total_n_zone_11',
-    'zone_12_name', 'P0_total_n_zone_12', 'zone_13_name', 'P0_total_n_zone_13',
-    'zone_14_name', 'P0_total_n_zone_14', 'pass_outcome', 'P1_type', 'P1_total_n_zone_1',
-    'P1_total_n_zone_3', 'P1_total_n_zone_4', 'P1_total_n_zone_5',
-    'P1_total_n_zone_6', 'P1_total_n_zone_7', 'P1_total_n_zone_8', 'P1_total_n_zone_9',
-    'P1_total_n_zone_10', 'P1_total_n_zone_11', 'P1_total_n_zone_12', 'P1_total_n_zone_13',
-    'P1_total_n_zone_14', 'location_x',	'location_y',
-]
-
-#df_1 = df_1.drop(columns=drop_cols)
-
-exclude_cols = [
-    'goal_20s', 'goal_20s_def', 'xg_20s', 'xg_20s_def',  # target-related
-]
-
-# Select numerical and categorical features
-feature_columns = [col for col in df_1.columns if col not in exclude_cols]
-
-# Separate numerical and categorical features
-numerical_features = []
-categorical_features = []
-
-for col in feature_columns:
-    if df[col].dtype in ['int64', 'float64']:
-        numerical_features.append(col)
-    else:
-        categorical_features.append(col)
 
 print(f"Numerical features: {len(numerical_features)}")
 print(f"Categorical features: {len(categorical_features)}")
 
-df_1 = df_1.dropna(subset=['P0_n_defenders_in_18yd_box', 'P1_n_defenders_in_18yd_box'])
-
-df_1['P1_GK_x'] = df_1['P1_GK_x'].fillna(-1)
-df_1['P1_GK_y'] = df_1['P1_GK_y'].fillna(-1)
-
-# df_1['pass_outcome'] = df_1['pass_outcome'].fillna('Undefined')
-
-df_1['has_xg'] = (df_1['xg_20s'] > 0).astype(int)
+df_1['has_xg'] = (df_1['xg_20s'] > 0.05).astype(int)
 print("Has xG distribution:")
 print(df_1['has_xg'].value_counts())
 print(f"Proportion with xG > 0: {df_1['has_xg'].mean():.3f}")
 
 # Stage 2: Predict xG value only for corners that have xG > 0
-df_positive_xg = df_1[df_1['xg_20s'] > 0].copy()
+df_positive_xg = df_1[df_1['xg_20s'] > 0.05].copy()
 print(f"\nPositive xG corners: {len(df_positive_xg)}")
 print(f"Mean xG when > 0: {df_positive_xg['xg_20s'].mean():.4f}")
 print(f"Median xG when > 0: {df_positive_xg['xg_20s'].median():.4f}")
@@ -98,8 +55,10 @@ model_stage1 = CatBoostClassifier(
     loss_function='Logloss',
     random_seed=42,
     verbose=100,
-    cat_features=categorical_features
+    cat_features=categorical_features,
+    auto_class_weights='Balanced'
 )
+
 
 print("\nTraining Stage 1 Model...")
 model_stage1.fit(
@@ -108,10 +67,28 @@ model_stage1.fit(
     early_stopping_rounds=50,
     verbose=100
 )
+print("---------------------------------------------------------------")
+print(X_train1.columns)
+
+model_stage1.save_model("catboost_corners_model_clasification.cbm")
 
 # Evaluate Stage 1
 y_pred1 = model_stage1.predict(X_test1)
 y_pred_proba1 = model_stage1.predict_proba(X_test1)[:, 1]
+
+
+from sklearn.metrics import precision_recall_curve
+import matplotlib.pyplot as plt
+
+prec, rec, thresh = precision_recall_curve(y_test1, y_pred_proba1)
+
+plt.plot(thresh, prec[:-1], label='Precision')
+plt.plot(thresh, rec[:-1], label='Recall')
+plt.xlabel("Threshold")
+plt.legend()
+plt.title("Precision–Recall Tradeoff")
+plt.show()
+
 
 print("\n" + "=" * 50)
 print("STAGE 1 RESULTS: Predicting xG > 0")

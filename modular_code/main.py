@@ -27,10 +27,11 @@ def main():
         comp_id = comps.iloc[0]['competition_id']
         season_id = comps.iloc[0]['season_id']
 
+        print(season_id)
         matches_df = downloader.get_matches(comp_id, season_id)
         all_corner_analysis = []
 
-        max_matches = min(5, len(matches_df))
+        max_matches = len(matches_df)
 
         print(f"Processing {max_matches} matches...")
 
