@@ -1,10 +1,14 @@
 import pandas as pd
 import warnings
+import traceback
 from typing import List, Dict, Optional, Tuple, Any
 from Corner import Corner, corner_zones, _is_in_box
 from DataDownloader import DataDownloader
 
 warnings.filterwarnings('ignore')
+
+FIELD_WIDTH = 120
+FIELD_HEIGHT = 80
 
 class CornerP1Analyzer:
     """Handles P1 analysis: immediate events after corners"""
@@ -73,130 +77,181 @@ class CornerP1Analyzer:
         print(f"✗ No events with freeze frames found at P1 timestamp {p1_candidate_timestamp}")
         return None
     
+    def _normalize_coordinates(self, x: float, y: float, p0_team: str, p1_team: str) -> Tuple[float, float]:
+        """
+        Normalize coordinates to always be from the perspective of the corner-taking team
+        
+        Only flip coordinates if P1 possession team is different from P0 corner team
+        """
+        needs_normalization = p0_team != p1_team
+        
+        if not needs_normalization:
+            # Same possession team - no coordinate adjustment needed
+            return x, y
+        else:
+            # Different possession team - flip coordinates
+            return FIELD_WIDTH - x, FIELD_HEIGHT - y
+    
     def _analyze_p1_event(self, p1_event: pd.Series, p0_corner: Corner) -> Dict[str, Any]:
         """
         Analyze a single P1 event - count players in zones and get GK position
-        Uses the same logic as Corner class but for P1 timeframe
+        Uses coordinate normalization to ensure consistent perspective
         """
         match_id = p1_event.get('match_id')
         event_id = p1_event.get('id', '')
-        
+    
         try:
-            # Get freeze frame data for P1 event (we already verified it exists)
+            # Get freeze frame data for P1 event
             frames_dict = self.downloader.get_match_frames(match_id)
             freeze_frame = frames_dict.get(event_id, [])
-            
+        
             if not freeze_frame:
-                print(f"Warning: Freeze frame not found for P1 event {event_id} (should not happen)")
+                print(f"Warning: Freeze frame not found for P1 event {event_id}")
                 return None
-            
+        
             # Use the same corner side as P0
             corner_side = p0_corner.corner_side
             zones = corner_zones(corner_side)
-            
-            # Initialize zone counts (same structure as Corner class)
+        
+            # Get teams for coordinate normalization
+            p0_team = p0_corner.team  # Attacking team (corner taker)
+            p1_team = p1_event.get('team', '')  # Team that performed P1 action
+        
+            print(f"P0 team: {p0_team}, P1 team: {p1_team}, Normalization needed: {p0_team != p1_team}")
+        
+            # Initialize zone counts
             zones_data = {
                 idx: {'attackers': 0, 'defenders': 0, 'total': 0, 'name': name}
                 for idx, (xmin, xmax, ymin, ymax, name) in enumerate(zones, start=1)
             }
-            
+        
             # Count players in zones for P1
             gk_x, gk_y = None, None
-            
-            # Flatten freeze frame if needed (same logic as Corner._iter_freeze_players)
+        
+            # Flatten freeze frame if needed
             if isinstance(freeze_frame, list) and len(freeze_frame) > 0 and isinstance(freeze_frame[0], list):
                 freeze_frame = freeze_frame[0]
-            
+        
             for player_data in freeze_frame:
                 if not isinstance(player_data, dict):
                     continue
-                    
+                
                 loc = player_data.get('location')
                 if not isinstance(loc, (list, tuple)) or len(loc) < 2:
                     continue
-                
+            
                 x, y = loc[0], loc[1]
                 is_teammate = p0_corner._coerce_bool(player_data.get('teammate', False))
                 is_keeper = p0_corner._coerce_bool(player_data.get('keeper', False))
-                
-                # Store GK coordinates
+            
+                # NORMALIZE COORDINATES to attacking team's perspective
+                x, y = self._normalize_coordinates(x, y, p0_team, p1_team)
+            
+                # CRITICAL: DO NOT flip the teammate flag!
+                # The freeze frame teammate flag is from P1 team's perspective
+                # After coordinate normalization, we need to determine if player is attacker/defender
+                # from P0 team's perspective
+            
+                # Store GK coordinates (in normalized coordinate system)
                 if is_keeper and gk_x is None:
                     gk_x, gk_y = x, y
-                
-                # Check each zone for player presence (same logic as Corner.count_players_in_zones)
+            
+                # Determine if player is attacker or defender FROM P0 PERSPECTIVE
+                # If P0 and P1 teams are the same: teammate flag is correct
+                # If P0 and P1 teams are different: teammate flag needs interpretation
+                if p0_team == p1_team:
+                    # Same team perspective: teammate means attacker
+                    is_attacker = is_teammate
+                else:
+                    # Different team perspective: teammate means defender (from P0 view)
+                    is_attacker = not is_teammate
+            
+                # Check each zone for player presence
                 for zone_id, zone_info in zones_data.items():
                     xmin, xmax, ymin, ymax, _ = zones[zone_id - 1]
                     if _is_in_box(x, y, xmin, xmax, ymin, ymax):
                         zones_data[zone_id]['total'] += 1
-                        if is_teammate:
+                        if is_attacker and not is_keeper:  # Attackers (excluding GK)
                             zones_data[zone_id]['attackers'] += 1
-                        elif not is_keeper:  # Exclude GK from defender counts
+                        elif not is_keeper:  # Defenders (excluding GK)
                             zones_data[zone_id]['defenders'] += 1
                         break
-            
+        
             # Convert zone counts to flat dictionary (P1 version)
             zone_dict = {}
             for zone_id, data in zones_data.items():
-                if zone_id == 2:  # Skip redundant zone (same as Corner.zones_to_dict)
+                if zone_id == 2:  # Skip redundant zone
                     continue
                 zone_dict.update({
                     f'P1_n_att_zone_{zone_id}': data['attackers'],
                     f'P1_n_def_zone_{zone_id}': data['defenders'],
                     f'P1_total_n_zone_{zone_id}': data['total']
                 })
-            
-            # Count players in boxes for P1 (same logic as Corner methods)
-            defenders_in_18yd = self._count_in_box_p1(
-                freeze_frame=freeze_frame,
-                p0_corner=p0_corner,
-                teammate_filter=False,
-                x_min=102, x_max=120, y_min=18, y_max=62,
-                exclude_goalkeeper=True
-            )
-            
-            attackers_in_6yd = self._count_in_box_p1(
-                freeze_frame=freeze_frame,
-                p0_corner=p0_corner,
-                teammate_filter=True,
-                x_min=114, x_max=120, y_min=36, y_max=44
-            )
-            
-            attackers_out_6yd = self._count_out_box_p1(freeze_frame, p0_corner)
-            
+        
+            # Count players in boxes for P1 using NORMALIZED coordinates
+            # Fix the counting methods similarly...
+        
             return {
                 'P1_event_id': event_id,
                 'P1_type': p1_event.get('type', ''),
                 'P1_timestamp': p1_event.get('timestamp', ''),
                 'P1_index': p1_event.get('index', ''),
-                'P1_n_defenders_in_18yd_box': defenders_in_18yd,
-                'P1_n_attackers_in_6yd_box': attackers_in_6yd,
-                'P1_n_attackers_out_6yd_box': attackers_out_6yd,
+                'P1_team': p1_team,
+                'P1_n_defenders_in_18yd_box': self._count_defenders_in_18yd_p1(freeze_frame, p0_corner, p0_team, p1_team),
+                'P1_n_attackers_in_6yd_box': self._count_attackers_in_6yd_p1(freeze_frame, p0_corner, p0_team, p1_team),
+                'P1_n_attackers_out_6yd_box': self._count_out_box_p1(freeze_frame, p0_corner, p0_team, p1_team),
                 'P1_GK_x': gk_x,
                 'P1_GK_y': gk_y,
+                'P1_coordinates_normalized': p0_team != p1_team,
                 **zone_dict
             }
-            
+        
         except Exception as e:
             print(f"Error analyzing P1 event {event_id}: {str(e)}")
+            traceback.print_exc()
             return None
+
+    def _count_defenders_in_18yd_p1(self, freeze_frame: List, p0_corner: Corner, p0_team: str, p1_team: str) -> int:
+        """Count defenders in 18yd box from P0 perspective"""
+        return self._count_in_box_p1(
+            freeze_frame=freeze_frame,
+            p0_corner=p0_corner,
+            p0_team=p0_team,
+            p1_team=p1_team,
+            count_attackers=False,  # Count defenders
+            x_min=102, x_max=120, y_min=18, y_max=62,
+            exclude_goalkeeper=True
+        )
+
+    def _count_attackers_in_6yd_p1(self, freeze_frame: List, p0_corner: Corner, p0_team: str, p1_team: str) -> int:
+        """Count attackers in 6yd box from P0 perspective"""
+        return self._count_in_box_p1(
+            freeze_frame=freeze_frame,
+            p0_corner=p0_corner,
+            p0_team=p0_team,
+            p1_team=p1_team,
+            count_attackers=True,  # Count attackers
+            x_min=114, x_max=120, y_min=36, y_max=44
+        )
     
     def _count_in_box_p1(self, freeze_frame: List, p0_corner: Corner,
-                        teammate_filter: Optional[bool], 
-                        x_min: float, x_max: float, y_min: float, y_max: float,
-                        exclude_goalkeeper: bool = True) -> int:
+                    p0_team: str, p1_team: str,
+                    count_attackers: bool, 
+                    x_min: float, x_max: float, y_min: float, y_max: float,
+                    exclude_goalkeeper: bool = True) -> int:
         """
-        Count players in box for P1 (same logic as Corner._count_in_box)
+        Count players in box for P1 with proper perspective handling
         """
         cnt = 0
-        
+    
         # Flatten freeze frame if needed
         if isinstance(freeze_frame, list) and len(freeze_frame) > 0 and isinstance(freeze_frame[0], list):
             freeze_frame = freeze_frame[0]
-        
+    
         for player_data in freeze_frame:
             if not isinstance(player_data, dict):
                 continue
-                
+            
             loc = player_data.get("location")
             if not isinstance(loc, (list, tuple)) or len(loc) < 2:
                 continue
@@ -206,29 +261,38 @@ class CornerP1Analyzer:
             except (TypeError, ValueError):
                 continue
 
+            # NORMALIZE COORDINATES
+            x, y = self._normalize_coordinates(x, y, p0_team, p1_team)
+
             if not _is_in_box(x, y, x_min, x_max, y_min, y_max):
                 continue
 
-            # Robust flags (same as Corner._coerce_bool)
+            # Robust flags
             is_keeper = p0_corner._coerce_bool(player_data.get("keeper", False))
             is_teammate = p0_corner._coerce_bool(player_data.get("teammate", False))
+
+            # Determine if player is attacker from P0 perspective
+            if p0_team == p1_team:
+                is_attacker = is_teammate
+            else:
+                is_attacker = not is_teammate
 
             # Always honor explicit GK exclusion first
             if exclude_goalkeeper and is_keeper:
                 continue
-            
-            if teammate_filter is None:
+        
+            # Count based on requested type
+            if count_attackers and is_attacker:
                 cnt += 1
-            else:
-                if is_teammate == teammate_filter:
-                    cnt += 1
+            elif not count_attackers and not is_attacker and not is_keeper:
+                cnt += 1
 
         return cnt
     
-    def _count_out_box_p1(self, freeze_frame: List, p0_corner: Corner) -> int:
+    def _count_out_box_p1(self, freeze_frame: List, p0_corner: Corner, 
+                         p0_team: str, p1_team: str) -> int:
         """
-        Count attackers outside 6-yard but inside 18-yard box for P1
-        (same logic as Corner._count_out_box)
+        Count attackers outside 6-yard but inside 18-yard box for P1 with coordinate normalization
         """
         cnt = 0
         
@@ -245,7 +309,15 @@ class CornerP1Analyzer:
                 continue
 
             x, y = loc[0], loc[1]
+            
+            # NORMALIZE COORDINATES
+            x, y = self._normalize_coordinates(x, y, p0_team, p1_team)
+            
             is_teammate = p0_corner._coerce_bool(player_data.get("teammate", False))
+            
+            # Adjust teammate flag if perspectives are different
+            if p0_team != p1_team:
+                is_teammate = not is_teammate
 
             # Count attackers who are in 18-yard box but NOT in 6-yard box
             if (is_teammate and
@@ -355,5 +427,3 @@ class CornerP1Analyzer:
         
         print(f"Successfully merged P0 and P1 data: {len(combined_df)} corners")
         return combined_df
-
-

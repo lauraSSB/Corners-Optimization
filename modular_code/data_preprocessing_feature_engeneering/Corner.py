@@ -126,6 +126,22 @@ class Corner:
         # Zone counting - mirror zones for Left corners only
         self.zone_counts = self.count_players_in_zones()
 
+    def normalize_coordinates(self, x: float, y: float, is_teammate: bool) -> Tuple[float, float]:
+        """
+        Normalize coordinates to always be from the perspective of the corner-taking team
+        
+        Only flip coordinates if P1 possession team is different from P0 corner team
+        """
+        # Check if we need to normalize coordinates
+        needs_normalization = self.team != self.p0_corner_team
+        
+        if not needs_normalization:
+            # Same possession team - no coordinate adjustment needed
+            return x, y
+        else:
+            # Different possession team - flip coordinates
+            return FIELD_WIDTH - x, FIELD_HEIGHT - y
+    
     def _determine_corner_side(self) -> str:
         """
         Determines from which corner the corner is executed

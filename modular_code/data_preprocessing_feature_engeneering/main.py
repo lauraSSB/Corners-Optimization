@@ -1,8 +1,6 @@
 import pandas as pd
 import warnings
 import os
-import pickle
-import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -14,69 +12,20 @@ from CornerAnalyzer import CornerAnalyzer
 from CornerP1Analyzer import CornerP1Analyzer
 from CornerNextBallLocations import CornerNextBallLocations
 
-
 warnings.filterwarnings('ignore')
 load_dotenv()
-
-class CachedDataDownloader(DataDownloader):
-    def __init__(self, cache_dir="./statsbomb_cache", *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.cache_dir = cache_dir
-        os.makedirs(cache_dir, exist_ok=True)
-    
-    def _get_cache_key(self, endpoint, **params):
-        key_str = f"{endpoint}_{str(params)}"
-        return hashlib.md5(key_str.encode()).hexdigest()
-    
-    def get_match_events(self, match_id: int) -> pd.DataFrame:
-        cache_key = self._get_cache_key("events", match_id=match_id)
-        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
-        
-        # Try cache first
-        if os.path.exists(cache_file):
-            with open(cache_file, 'rb') as f:
-                print(f"✓ Loaded events for match {match_id} from cache")
-                return pickle.load(f)
-        
-        # Fetch from API
-        events = super().get_match_events(match_id)
-        
-        # Cache the result
-        if not events.empty:
-            with open(cache_file, 'wb') as f:
-                pickle.dump(events, f)
-        
-        return events
-    
-    def get_match_frames(self, match_id: int) -> dict:
-        cache_key = self._get_cache_key("frames", match_id=match_id)
-        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
-        
-        if os.path.exists(cache_file):
-            with open(cache_file, 'rb') as f:
-                print(f"✓ Loaded frames for match {match_id} from cache")
-                return pickle.load(f)
-        
-        frames = super().get_match_frames(match_id)
-        
-        if frames:
-            with open(cache_file, 'wb') as f:
-                pickle.dump(frames, f)
-        
-        return frames
 
 def main():
     """Main function to download Liga MX data, calculate game state, corner execution time, and corner analysis"""
 
     try:
-        downloader = CachedDataDownloader(cache_dir="./statsbomb_cache")
+        downloader = DataDownloader()
         game_state_calculator = GameStateCalculator()
         twenty_second_metrics = TwentySecondMetrics()
         time_to_corner = TimeToCorner()
         corner_analyzer = CornerAnalyzer(downloader)
         p1_analyzer = CornerP1Analyzer(downloader)
         next_ball_locations = CornerNextBallLocations(downloader)
-
 
         comps = downloader.get_competitions()
         comp_id = comps.iloc[0]['competition_id']
@@ -85,7 +34,7 @@ def main():
         matches_df = downloader.get_matches(comp_id, season_id)
         all_corner_analysis = []
 
-        max_matches = min(1, len(matches_df))
+        max_matches = min(10,len(matches_df))
 
         print(f"Processing {max_matches} matches...")
 
@@ -123,12 +72,12 @@ def main():
                 if not p0_df.empty:
                     # Perform P1 analysis for this match
                     p1_df = p1_analyzer.analyze_p1_events(events_with_corner_time, corner_analyzer.corners_data)
-                    
-                    # Merge P0 and P1 data
+
                     combined_df = p1_analyzer.merge_p0_p1_data(p0_df, p1_df)
 
                     # Perform next five ball receipts actions analysis for this match
                     next_ball_locations_df = next_ball_locations.find_next_ball_receipts(combined_df, events_df)
+
                     final_df = pd.merge(combined_df, next_ball_locations_df, on="event_id", how="left")
 
                     # Merge P0 and P1 data

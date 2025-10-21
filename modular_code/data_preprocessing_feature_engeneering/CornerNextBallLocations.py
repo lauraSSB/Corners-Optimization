@@ -211,5 +211,3 @@ class CornerNextBallLocations:
         except KeyError as e:
             print(f"KeyError: {e}")
             return
-
-
