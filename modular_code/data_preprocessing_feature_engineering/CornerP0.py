@@ -26,7 +26,7 @@ SIX_YARD_Y_MAX = 44
 
 def _flip_rect(rect: Tuple[float, float, float, float, str],
                flip_y: bool = False) -> Tuple[float, float, float, float, str]:
-    """Flip rectangle coordinates vertically for Left corners """
+    """Flip rectangle coordinates vertically for Left corners"""
     xmin, xmax, ymin, ymax, name = rect
     if flip_y:
         # Mirror vertically (y-axis flip only)
@@ -52,7 +52,7 @@ def corner_zones(corner: str = "Right") -> List[Tuple[float, float, float, float
         (102, 108, 50, 62, "Short return – far"),    # 11
         (114, 120, 18, 30, "Short return – central"),   # 12
         (114, 120, 50, 62, "Far-post low (6yd, mid-height)"),    # 13
-        (102, 121, -1, 18, "Advanced wide return (touchline channel)"),   # 14
+        (102, 122, -2, 18, "Advanced wide return (touchline channel)"),   # 14
     ]
 
     # Only Left corners need vertical mirroring
@@ -67,7 +67,7 @@ def _is_in_box(x: float, y: float, x_min: float, x_max: float, y_min: float, y_m
     return x_min <= x <= x_max and y_min <= y <= y_max
 
 @dataclass
-class Corner:
+class CornerP0:
     '''Optimized Corner class with proper zone mirroring for Right/Left corners only'''
 
     # Raw event fields
@@ -97,35 +97,54 @@ class Corner:
     attackers_out_6yd_box: int = field(init=False, default=0)
 
     zone_counts: Dict[int, Dict[str, int]] = field(init=False, default_factory=dict)
-    corner_side: str = field(init=False, default="TR")
+    corner_side: str = field(init=False, default="Right")
 
     def __post_init__(self) -> None:
         """Initialize derived attributes"""
         # Determine actual corner side (only Right or Left exist)
         self.corner_side = self._determine_corner_side()
 
-        self.defenders_in_18yd_box = self._count_in_box(
-            teammate_filter=False,
-            x_min=EIGHTEEN_YRDS_BOX_X_MIN, 
-            x_max=EIGHTEEN_YRDS_BOX_X_MAX,
-            y_min=EIGHTEEN_YRDS_BOX_Y_MIN, 
-            y_max=EIGHTEEN_YRDS_BOX_Y_MAX,
-            exclude_goalkeeper=True
-        )
-
-        self.attackers_in_6yd_box = self._count_in_box(
-            teammate_filter=True,
-            x_min=SIX_YARD_X_MIN, 
-            x_max=SIX_YARD_X_MAX,
-            y_min=SIX_YARD_Y_MIN, 
-            y_max=SIX_YARD_Y_MAX
-        )
-
-        self.attackers_out_6yd_box = self._count_out_box()
-
-        # Zone counting - mirror zones for Left corners only
+        # Calculate zone counts first
         self.zone_counts = self.count_players_in_zones()
 
+        # Now calculate the box counts from zone data
+        self.defenders_in_18yd_box = self._count_defenders_in_18yd_box()
+        self.attackers_in_6yd_box = self._count_attackers_in_6yd_box()
+        self.attackers_out_6yd_box = self._count_attackers_out_6yd_box()
+
+    def _count_defenders_in_18yd_box(self) -> int:
+        """Count defenders in 18-yard box (zones 1-13)"""
+        if not self.zone_counts:
+            return 0
+        
+        total_defenders = 0
+        # Zones 1-13 are within the 18-yard box (zone 14 is outside)
+        for zone_id in range(1, 14):
+            if zone_id in self.zone_counts:
+                total_defenders += self.zone_counts[zone_id]['defenders']
+        
+        return total_defenders
+
+    def _count_attackers_in_6yd_box(self) -> int:
+        """Count attackers in 6-yard box (zone 2)"""
+        if not self.zone_counts or 2 not in self.zone_counts:
+            return 0
+        return self.zone_counts[2]['attackers']
+
+    def _count_attackers_out_6yd_box(self) -> int:
+        """Count attackers outside 6-yard box but in 18-yard box (zones 1, 3-13)"""
+        if not self.zone_counts:
+            return 0
+        
+        total_attackers = 0
+        # All zones except zone 2 (6-yard box) and zone 14 (outside 18-yard box)
+        for zone_id in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]:
+            if zone_id in self.zone_counts:
+                total_attackers += self.zone_counts[zone_id]['attackers']
+        
+        return total_attackers
+
+    
     def _determine_corner_side(self) -> str:
         """
         Determines from which corner the corner is executed
@@ -137,7 +156,7 @@ class Corner:
         x, y = self.location
 
         # StatsBomb always frames with attacking team left-to-right
-        # So corners are only from top-right (TR) or bottom-right (BR)
+        # So corners are only from top-right (Right) or bottom-right (Left)
         is_top = y < FIELD_HEIGHT / 2  # Use FIELD_HEIGHT for y-coordinate comparison
 
         # Since attacking team is always left-to-right, all corners are on the right side
@@ -145,29 +164,30 @@ class Corner:
         return "Right" if is_top else "Left"
 
     def _iter_freeze_players(self):
-      """Yield player dicts from freeze_frame regardless of nested shape [[{...}]] or [{...}]."""
-      ff = self.freeze_frame
-      if not ff:
-        return
-      # Flatten one level if needed: [[{...}, {...}]] -> [{...}, {...}]
-      if isinstance(ff, list) and len(ff) > 0 and isinstance(ff[0], list):
+        """Yield player dicts from freeze_frame regardless of nested shape [[{...}]] or [{...}]."""
+        ff = self.freeze_frame
+        if not ff:
+            return
+        # Flatten one level if needed: [[{...}, {...}]] -> [{...}, {...}]
+        if isinstance(ff, list) and len(ff) > 0 and isinstance(ff[0], list):
             ff = ff[0]
 
-      for p in ff:
-        if isinstance(p, dict):
-          yield p
+        for p in ff:
+            if isinstance(p, dict):
+                yield p
 
     @staticmethod
     def _coerce_bool(v) -> bool:
-      """Robust boolean coercion for fields that may be True/False/1/0/'true'/'false'/etc."""
-      if isinstance(v, bool):
-        return v
-      if isinstance(v, (int, float)):
-        return v != 0
-      if isinstance(v, str):
-        return v.strip().lower() in ("1", "true", "yes", "y", "t")
-      return False
+        """Robust boolean coercion for fields that may be True/False/1/0/'true'/'false'/etc."""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return v != 0
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "y", "t")
+        return False
 
+    
     def _count_in_box(
         self,
         teammate_filter: Optional[bool],
@@ -190,9 +210,8 @@ class Corner:
 
         frame = self.freeze_frame
         if frame and isinstance(frame, list) and len(frame) == 1 and isinstance(frame[0], list):
-          frame = frame[0]
+            frame = frame[0]
         
-      
         cnt = 0
 
         for player_data in self._iter_freeze_players():
@@ -201,26 +220,26 @@ class Corner:
                 continue
 
             try:
-              x, y = float(loc[0]), float(loc[1])
+                x, y = float(loc[0]), float(loc[1])
             except(TypeError, ValueError):
-              continue
-            
+                continue
+
             if not _is_in_box(x, y, x_min, x_max, y_min, y_max):
-              continue
+                continue
 
             # Robust flags
-            is_keeper = self._coerce_bool(player_data.get("keeper", False))
+            is_keeper   = self._coerce_bool(player_data.get("keeper", False))
             is_teammate = self._coerce_bool(player_data.get("teammate", False))
 
             # Always honor explicit GK exclusion first
             if exclude_goalkeeper and is_keeper:
                 continue
-
+            
             if teammate_filter is None:
                 cnt += 1
             else:
-              if is_teammate == teammate_filter:
-                cnt += 1
+                if is_teammate == teammate_filter:
+                    cnt += 1
 
         return cnt
 
@@ -273,7 +292,7 @@ class Corner:
                 continue
 
             x, y = loc[0], loc[1]
-            is_teammate = self._coerce_bool(player_data.get('teammate', False))
+            is_teammate = self._coerce_bool(player_data.get('teammate'))
             is_keeper = self._coerce_bool(player_data.get('keeper', False))
 
             # Check each zone for player presence
@@ -283,7 +302,7 @@ class Corner:
                     zones_data[zone_id]['total'] += 1
                     if is_teammate:
                         zones_data[zone_id]['attackers'] += 1
-                    elif not is_keeper:                            # Exclude GK from defender counts
+                    elif not is_keeper:                            # ✅ exclude GK from defender counts
                         zones_data[zone_id]['defenders'] += 1
                     break
 
@@ -315,52 +334,6 @@ class Corner:
                 if isinstance(loc, (list, tuple)) and len(loc) >= 2:
                     return loc[0], loc[1]
         return None, None
-
-    def get_P1_infomation(self):
-        """Get information of the next event"""
-        downloader = DataDownloader()
-
-        p1_event = downloader.get_next_related_event(self.match_id, self.event_id)
-        if not p1_event:
-            return {}
-
-        else:
-            event_id_p1 = p1_event.get('id', '')
-            match_id_p1 = p1_event.get('match_id')
-            frames_dict = downloader.get_match_frames(self.match_id)
-            freeze_frame = frames_dict.get(event_id_p1, [])
-
-            corner = Corner(
-                match_id=match_id_p1,
-                event_id=event_id_p1,
-                team=p1_event.get('team', ''),
-                player=p1_event.get('player', ''),
-                minute=p1_event.get('minute', 0),
-                second=p1_event.get('second', 0),
-                period=p1_event.get('period', 1),
-                freeze_frame=freeze_frame
-            )
-
-            return corner.to_dict_t1_event()
-
-    def to_dict_t1_event(self):
-        """Convert the event p1 of the corner into a flat dictionary for DataFrames"""
-        gk_x, gk_y = self._get_goalkeeper_coordinates()
-
-        base_dict = {
-            "P1_n_defenders_in_18yd_box": self.defenders_in_18yd_box,
-            "P1_n_attackers_in_6yd_box": self.attackers_in_6yd_box,
-            "P1_n_attackers_out_6yd_box": self.attackers_out_6yd_box,
-
-            # Goalkeeper coordinates
-            "P1_GK_x": gk_x,
-            "P1_GK_y": gk_y,
-        }
-
-        # Add zone data
-        base_dict.update(self.zones_to_dict())
-
-        return base_dict
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert the corner object into a flat dictionary for DataFrames"""
@@ -406,6 +379,5 @@ class Corner:
 
         # Add zone data
         base_dict.update(self.zones_to_dict())
-        base_dict.update(self.get_P1_infomation())
 
         return base_dict
