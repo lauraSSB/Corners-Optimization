@@ -4,7 +4,7 @@ CatBoost Classification: High-threat (xG > P75) vs Low-threat (<= P75)
 - Computes the 75th percentile threshold and splits train/val on the TRAIN fold only (prevents data leakage).
 - Creates target: 1 = high-threat, 0 = low-threat.
 - Adds class weights to address the class imbalance.
-- Light hyperparameter search via model.grid_search.
+- Multiple hyperparameter tuning options: grid search, random search, and Bayesian optimization.
 - Evaluates AUC, PR-AUC, F1 (with threshold tuned on validation for F1).
 - Exports SHAP mean(|value|) per feature to CSV.
 - Exports metrics, feature importance (gain), mean |SHAP|, and optionally:
@@ -17,6 +17,8 @@ USAGE (example):
   --xg_col xg_20s \
   --id_cols match_id,event_id \
   --val_size 0.2 \
+  --tuning_method bayesian \
+  --n_trials 50 \
   --export_shap_full \
   --export_shap_compact
 """
@@ -26,13 +28,23 @@ import json
 import math
 import numpy as np
 import pandas as pd
+import optuna
 
-from typing import List, Tuple
+import warnings
+from typing import List, Tuple, Any
 
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve, f1_score, classification_report, confusion_matrix
 
 from catboost import CatBoostClassifier, Pool
+
+# Optional imports for hyperparameter tuning
+try:
+    import optuna
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
+    warnings.warn("Optuna not available. Bayesian optimization will not work.")
 
 def compute_threshold(train_xg: pd.Series, quantile: float = 0.75) -> float:
     # robust to NaNs
@@ -70,6 +82,121 @@ def evaluate(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict:
         "classification_report": rep
     }
 
+def objective_catboost_grid_search(trial, train_pool, val_pool, feature_cols, iterations, es_rounds, random_state):
+    """Objective function for CatBoost's native grid search"""
+    param_grid = {
+        "depth": trial.suggest_categorical("depth", [4, 6, 8, 10]),
+        "learning_rate": trial.suggest_categorical("learning_rate", [0.01, 0.03, 0.05, 0.08, 0.1]),
+        "l2_leaf_reg": trial.suggest_categorical("l2_leaf_reg", [1.0, 3.0, 5.0, 7.0, 10.0]),
+        "border_count": trial.suggest_categorical("border_count", [64, 128, 254]),
+        "random_strength": trial.suggest_categorical("random_strength", [0.5, 1.0, 2.0]),
+        "bagging_temperature": trial.suggest_categorical("bagging_temperature", [0.0, 0.5, 1.0, 2.0]),
+    }
+
+    model = CatBoostClassifier(
+        **param_grid,
+        loss_function="Logloss",
+        eval_metric="AUC",
+        random_seed=random_state,
+        iterations=iterations,
+        verbose=False,
+        od_type="Iter",
+        od_wait=es_rounds,
+        auto_class_weights='SqrtBalanced',
+        thread_count=-1
+    )
+
+    model.fit(train_pool, eval_set=val_pool, use_best_model=True, verbose=False)
+    val_prob = model.predict_proba(val_pool)[:, 1]
+    auc = roc_auc_score(val_pool.get_label(), val_prob)
+    return auc
+
+def random_search_hyperparams(train_pool, val_pool, iterations, es_rounds, random_state, n_trials=20):
+    """Random search for hyperparameter optimization"""
+    best_score = -1
+    best_params = {}
+    param_distributions = {
+        "depth": [4, 5, 6, 7, 8, 9, 10],
+        "learning_rate": np.logspace(-3, -1, 10).tolist(),  # 0.001 to 0.1
+        "l2_leaf_reg": np.logspace(0, 2, 10).tolist(),     # 1 to 100
+        "border_count": [32, 64, 128, 254],
+        "random_strength": [0.5, 1.0, 2.0, 3.0],
+        "bagging_temperature": [0.0, 0.5, 1.0, 2.0],
+    }
+
+    for trial in range(n_trials):
+        params = {
+            "depth": np.random.choice(param_distributions["depth"]),
+            "learning_rate": np.random.choice(param_distributions["learning_rate"]),
+            "l2_leaf_reg": np.random.choice(param_distributions["l2_leaf_reg"]),
+            "border_count": np.random.choice(param_distributions["border_count"]),
+            "random_strength": np.random.choice(param_distributions["random_strength"]),
+            "bagging_temperature": np.random.choice(param_distributions["bagging_temperature"]),
+        }
+
+        model = CatBoostClassifier(
+            **params,
+            loss_function="Logloss",
+            eval_metric="AUC",
+            random_seed=random_state + trial,
+            iterations=iterations,
+            verbose=False,
+            od_type="Iter",
+            od_wait=es_rounds,
+            auto_class_weights='SqrtBalanced',
+            thread_count=-1
+        )
+
+        model.fit(train_pool, eval_set=val_pool, use_best_model=True, verbose=False)
+        val_prob = model.predict_proba(val_pool)[:, 1]
+        auc = roc_auc_score(val_pool.get_label(), val_prob)
+
+        if auc > best_score:
+            best_score = auc
+            best_params = params.copy()
+            print(f"Random search trial {trial+1}/{n_trials}: AUC = {auc:.4f} (new best)")
+        else:
+            print(f"Random search trial {trial+1}/{n_trials}: AUC = {auc:.4f}")
+
+    return best_params, best_score
+
+def bayesian_optimization_hyperparams(train_pool, val_pool, iterations, es_rounds, random_state, n_trials=50):
+    """Bayesian optimization using Optuna"""
+    if not OPTUNA_AVAILABLE:
+        raise ImportError("Optuna is required for Bayesian optimization")
+    def objective(trial):
+        params = {
+            "depth": trial.suggest_int("depth", 4, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.001, 0.1, log=True),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1.0, 100.0, log=True),
+            "border_count": trial.suggest_categorical("border_count", [32, 64, 128, 254]),
+            "random_strength": trial.suggest_float("random_strength", 0.5, 3.0),
+            "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 2.0),
+        }
+
+        model = CatBoostClassifier(
+            **params,
+            loss_function="Logloss",
+            eval_metric="AUC",
+            random_seed=random_state,
+            iterations=iterations,
+            verbose=False,
+            od_type="Iter",
+            od_wait=es_rounds,
+            auto_class_weights='SqrtBalanced',
+            thread_count=-1
+        )
+        
+        model.fit(train_pool, eval_set=val_pool, use_best_model=True, verbose=False)
+        val_prob = model.predict_proba(val_pool)[:, 1]
+        auc = roc_auc_score(val_pool.get_label(), val_prob)
+        return auc
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=n_trials)
+
+    return study.best_params, study.best_value
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, required=True, help="Path to CSV")
@@ -78,7 +205,8 @@ def main():
     parser.add_argument("--drop_cols", type=str, default="", help="Comma-separated extra cols to drop")
     parser.add_argument("--val_size", type=float, default=0.2, help="Validation size fraction")
     parser.add_argument("--random_state", type=int, default=42)
-    parser.add_argument("--do_search", action="store_true", help="Run a small hyperparameter grid search")
+    parser.add_argument("--tuning_method", type=str, default="none", choices=["none", "random", "bayesian"], help="Hyperparameter tuning method")
+    parser.add_argument("--n_trials", type=int, default=20, help="Number of trials for random/bayesian search")
     parser.add_argument("--iterations", type=int, default=2000, help="Max trees (with early stopping)")
     parser.add_argument("--es_rounds", type=int, default=200, help="Early stopping rounds")
     parser.add_argument("--export_shap_full", action="store_true", help="Export per-sample SHAP for ALL features (validation set)")
@@ -148,33 +276,99 @@ def main():
     train_pool = Pool(X_train, y_train, cat_features=cat_idx if len(cat_idx) else None)
     val_pool   = Pool(X_val,   y_val,   cat_features=cat_idx if len(cat_idx) else None)
 
-    # Baseline model
-    model = CatBoostClassifier(
-        loss_function="Logloss",
-        eval_metric="AUC",
-        learning_rate=0.05,
-        depth=6,
-        l2_leaf_reg=3.0,
-        random_seed=args.random_state,
-        iterations=args.iterations,
-        verbose=200,
-        od_type="Iter",
-        od_wait=args.es_rounds,
-        auto_class_weights='SqrtBalanced', 
-        thread_count=-1
-    )
+    # Hyperparameter tuning
+    best_params = None
+    if args.tuning_method == "grid":
+        print("[INFO] Running CatBoost native grid search...")
 
-    # Optional lightweight search
-    if args.do_search:
         param_grid = {
-            "depth": [5, 6, 7, 8],
-            "learning_rate": [0.03, 0.05, 0.08],
-            "l2_leaf_reg": [1.0, 3.0, 5.0, 7.0],
-            "border_count": [128, 254],
-            "bagging_temperature": [0.0, 0.5, 1.0],
+            "depth": [4, 6, 8, 10],
+            "learning_rate": [0.01, 0.03, 0.05, 0.08],
+            "l2_leaf_reg": [1.0, 3.0, 5.0, 7.0, 10.0],
+            "border_count": [64, 128, 254],
+            "random_strength": [0.5, 1.0, 2.0],
+            "bagging_temperature": [0.0, 0.5, 1.0, 2.0],
         }
-        print("[INFO] Running CatBoost native grid_search (this may take a while)...")
-        model.grid_search(param_grid, X=train_pool, y=None, cv=StratifiedKFold(n_splits=4, shuffle=True, random_state=args.random_state), shuffle=True, verbose=False)
+
+        model = CatBoostClassifier(
+            loss_function="Logloss",
+            eval_metric="AUC",
+            random_seed=args.random_state,
+            iterations=args.iterations,
+            verbose=False,
+            od_type="Iter",
+            od_wait=args.es_rounds,
+            auto_class_weights='SqrtBalanced',
+            thread_count=-1
+        )
+
+        model.grid_search(
+            param_grid, 
+            X=train_pool, 
+            y=None, 
+            cv=StratifiedKFold(n_splits=4, shuffle=True, random_state=args.random_state), 
+            shuffle=True, 
+            verbose=False
+        )
+
+        best_params = model.get_params()
+
+    elif args.tuning_method == "random":
+        print(f"[INFO] Running random search with {args.n_trials} trials...")
+        best_params, best_score = random_search_hyperparams(
+            train_pool, val_pool, args.iterations, args.es_rounds, args.random_state, args.n_trials
+        )
+        print(f"Random search best AUC: {best_score:.4f}")
+
+    elif args.tuning_method == "bayesian":
+        if not OPTUNA_AVAILABLE:
+            print("[WARN] Optuna not available. Falling back to random search.")
+            best_params, best_score = random_search_hyperparams(
+                train_pool, val_pool, args.iterations, args.es_rounds, args.random_state, args.n_trials
+            )
+
+        else:
+            print(f"[INFO] Running Bayesian optimization with {args.n_trials} trials...")
+            best_params, best_score = bayesian_optimization_hyperparams(
+                train_pool, val_pool, args.iterations, args.es_rounds, args.random_state, args.n_trials
+            )
+            print(f"Bayesian optimization best AUC: {best_score:.4f}")
+
+    # Final model training
+    if best_params:
+        print(f"Using optimized parameters: {best_params}")
+        model = CatBoostClassifier(
+            **best_params,
+            loss_function="Logloss",
+            eval_metric="AUC",
+            random_seed=args.random_state,
+            iterations=args.iterations,
+            verbose=200,
+            od_type="Iter",
+            od_wait=args.es_rounds,
+            auto_class_weights='SqrtBalanced',
+            thread_count=-1
+        )
+
+    else:
+        # Baseline model
+        model = CatBoostClassifier(
+            loss_function="Logloss",
+            eval_metric="AUC",
+            learning_rate=0.05,
+            depth=6,
+            l2_leaf_reg=3.0,
+            border_count=254,
+            random_strength=1.0,
+            bagging_temperature=1.0,
+            random_seed=args.random_state,
+            iterations=args.iterations,
+            verbose=200,
+            od_type="Iter",
+            od_wait=args.es_rounds,
+            auto_class_weights='SqrtBalanced', 
+            thread_count=-1
+        )
 
     # Fit with validation
     model.fit(train_pool, eval_set=val_pool, use_best_model=True)
@@ -183,6 +377,11 @@ def main():
     val_prob = model.predict_proba(val_pool)[:, 1]
     best_t, best_f1 = pick_best_threshold_by_f1(y_val.values, val_prob)
     metrics = evaluate(y_val.values, val_prob, best_t)
+
+     # Add tuning info to metrics
+    metrics["tuning_method"] = args.tuning_method
+    if best_params:
+        metrics["best_params"] = best_params
 
     print("\n=== HOLDOUT METRICS ===")
     print(json.dumps(metrics, indent=2))
