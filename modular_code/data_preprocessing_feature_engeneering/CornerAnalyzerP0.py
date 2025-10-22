@@ -5,7 +5,7 @@ import warnings
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 
-from Corner import Corner
+from CornerP0 import CornerP0
 from DataDownloader import DataDownloader
 
 warnings.filterwarnings('ignore')
@@ -14,12 +14,12 @@ load_dotenv()
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette("husl")
 
-class CornerAnalyzer:
-    """Handles corner kick analysis - integrates with existing pipeline"""
+class CornerAnalyzerP0:
+    """Handles P0 corner kick analysis - integrates with existing pipeline"""
 
     def __init__(self, downloader: DataDownloader = None):
         self.downloader = downloader or DataDownloader()
-        self.corners_data: List[Corner] = []
+        self.corners_data: List[CornerP0] = []
         self.corners_df: Optional[pd.DataFrame] = None
 
     def analyze_corners_from_processed_data(self, processed_events_df: pd.DataFrame) -> pd.DataFrame:
@@ -68,8 +68,8 @@ class CornerAnalyzer:
                 location = event.get('location', [None, None])
                 end_location = event.get('pass_end_location', [None, None])
                 
-                # Create Corner object with detailed analysis
-                corner = Corner(
+                # Create CornerP0 object with detailed analysis
+                corner = CornerP0(
                     match_id=match_id,
                     event_id=event_id,
                     team=event.get('team', ''),
@@ -143,10 +143,3 @@ class CornerAnalyzer:
         else:
             print("No data to save")
             return None
-
-# Example usage
-if __name__ == "__main__":
-    # This demonstrates how to use the analyzer with existing processed data
-    print("CornerAnalyzer is designed to work with data processed by the main pipeline")
-    print("Use analyze_corners_from_processed_data() method with data from TimeToCorner")
-    print("Example: analyzer.analyze_corners_from_processed_data(processed_events_df)")

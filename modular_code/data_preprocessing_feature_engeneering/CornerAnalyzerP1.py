@@ -2,15 +2,13 @@ import pandas as pd
 import warnings
 import traceback
 from typing import List, Dict, Optional, Tuple, Any
-from Corner import Corner, corner_zones, _is_in_box
+from CornerP0 import CornerP0, _is_in_box, FIELD_WIDTH, FIELD_HEIGHT
+from CornerP1 import CornerP1
 from DataDownloader import DataDownloader
 
 warnings.filterwarnings('ignore')
 
-FIELD_WIDTH = 120
-FIELD_HEIGHT = 80
-
-class CornerP1Analyzer:
+class CornerAnalyzerP1:
     """Handles P1 analysis: immediate events after corners"""
     
     def __init__(self, downloader: DataDownloader = None):
@@ -110,47 +108,79 @@ class CornerP1Analyzer:
 
     def _adjust_freeze_frame_for_p0_perspective(self, freeze_frame: List, p0_team: str, p1_team: str) -> List[Dict]:
         """
-        CORRECTED: Adjust freeze frame to be from P0 perspective by:
-        1. Normalizing coordinates to always be from corner-taking team's attacking perspective
-        2. Teammate flags should represent: True=attacker, False=defender from P0's perspective
+        CORRECTED: Adjust freeze frame to be from P0 perspective using goalkeeper-based logic
+        with fallback to original logic if goalkeeper identification fails
         """
         adjusted_frame = []
     
+        # Step 1: Find all goalkeepers in the freeze frame
+        goalkeepers = []
+    
         for player_data in self._iter_freeze_players(freeze_frame):
-            # Create a copy of the player data
+            if self._coerce_bool(player_data.get('keeper', False)):
+                goalkeepers.append(player_data)
+    
+        # If we have exactly one goalkeeper, use their team as defending team
+        defending_team_goalkeeper = None
+        if len(goalkeepers) == 1:
+            defending_team_goalkeeper = self._coerce_bool(goalkeepers[0].get('teammate', False))
+            print(f"Found goalkeeper: teammate={defending_team_goalkeeper}")
+        elif len(goalkeepers) > 1:
+            print(f"Warning: Multiple goalkeepers ({len(goalkeepers)}) found - using fallback logic")
+        else:
+            print(f"Warning: No goalkeepers found - using fallback logic")
+    
+        # Step 2: Process all players and set correct teammate flags
+        for player_data in self._iter_freeze_players(freeze_frame):
             player_copy = player_data.copy()
         
-            # STEP 1: Always normalize coordinates to P0's attacking perspective
+            # STEP 1: Normalize coordinates to P0's attacking perspective
             loc = player_data.get('location')
             if loc and len(loc) >= 2:
                 x, y = loc[0], loc[1]
                 x_norm, y_norm = self._normalize_coordinates(x, y, p0_team, p1_team)
                 player_copy['location'] = [x_norm, y_norm]
         
-            # STEP 2: Determine correct teammate flag for P0 perspective
-            is_teammate_p1 = self._coerce_bool(player_data.get('teammate', False))
-        
-            # The key insight: Teammate flag should always mean "on the corner-taking team"
-            # regardless of which team has possession at P1
-            if p0_team == p1_team:
-                # Same team at P1: P1 teammate flags are already correct
-                # Teammate=True means on corner-taking team (attacker)
-                # Teammate=False means on defending team
-                player_copy['teammate'] = is_teammate_p1
+            # STEP 2: Determine correct teammate flag
+            if defending_team_goalkeeper is not None:
+                # Use goalkeeper-based logic
+                is_keeper = self._coerce_bool(player_data.get('keeper', False))
+                original_teammate = self._coerce_bool(player_data.get('teammate', False))
+            
+                if is_keeper:
+                    # This is a goalkeeper - they should be on the defending team
+                    player_copy['teammate'] = False  # Goalkeeper is defender
+                else:
+                    # Regular player: if they're on the same team as the goalkeeper, they're defenders
+                    if original_teammate == defending_team_goalkeeper:
+                        player_copy['teammate'] = False  # Defender
+                    else:
+                        player_copy['teammate'] = True   # Attacker
             else:
-                # Different team at P1: P1 teammate flags are from P1 team's perspective
-                # We need to convert to P0 (corner-taking team) perspective
-                # If player is teammate of P1 team, they're defending against P0
-                # If player is NOT teammate of P1 team, they're on P0 team (attacking)
-                player_copy['teammate'] = not is_teammate_p1
-        
+                # Fallback to original logic if goalkeeper identification failed
+                is_teammate_p1 = self._coerce_bool(player_data.get('teammate', False))
+                
+                if p0_team == p1_team:
+                    # Same team at P1: P1 teammate flags are already correct
+                    player_copy['teammate'] = is_teammate_p1
+                else:
+                    # Different team at P1: flip teammate flags
+                    player_copy['teammate'] = not is_teammate_p1
+            
             adjusted_frame.append(player_copy)
+    
+        # Debug output
+        attackers = sum(1 for p in adjusted_frame if p.get('teammate') and not p.get('keeper'))
+        defenders = sum(1 for p in adjusted_frame if not p.get('teammate') and not p.get('keeper'))
+        goalkeepers = sum(1 for p in adjusted_frame if p.get('keeper'))
+        print(f"Final counts - Attackers: {attackers}, Defenders: {defenders}, Goalkeepers: {goalkeepers}")
     
         return adjusted_frame
 
     def _find_first_p1_with_freeze_frame(self, processed_events_df: pd.DataFrame, p0_event: pd.Series) -> Optional[pd.Series]:
         """
         Find the FIRST P1 event with freeze frame for a given P0 corner event
+        Uses the same logic as CornerP1Analyzer
         """
         if 'index' not in processed_events_df.columns:
             print("Required column 'index' not found")
@@ -202,9 +232,9 @@ class CornerP1Analyzer:
         print(f"✗ No events with freeze frames found at P1 timestamp {p1_candidate_timestamp}")
         return None
     
-    def _analyze_p1_event(self, p1_event: pd.Series, p0_corner: Corner) -> Dict[str, Any]:
+    def _analyze_p1_event(self, p1_event: pd.Series, p0_corner: CornerP0) -> Dict[str, Any]:
         """
-        Analyze a single P1 event using the exact same Corner class logic as P0
+        Analyze a single P1 event using the CornerP1 class
         """
         match_id = p1_event.get('match_id')
         event_id = p1_event.get('id', '')
@@ -232,176 +262,37 @@ class CornerP1Analyzer:
             # DEBUG: Show coordinate and teammate transformations
             self._debug_p1_analysis(freeze_frame, p0_team, p1_team, adjusted_freeze_frame)
 
-            # Create a temporary Corner object with ADJUSTED freeze frame
-            # This uses the exact same logic as CornerAnalyzer for P0
-            temp_corner = Corner(
-                match_id=p0_corner.match_id,
-                event_id=p0_corner.event_id + "_P1",
-                team=p0_corner.team,  # Keep P0 team
-                player=p0_corner.player,
-                minute=p0_corner.minute,
-                second=p0_corner.second,
-                period=p0_corner.period,
-                location=p0_corner.location,
-                end_location=p0_corner.end_location,
-                pass_outcome=p0_corner.pass_outcome,
-                pass_height=p0_corner.pass_height,
-                pass_length=p0_corner.pass_length,
-                pass_technique=p0_corner.pass_technique,
-                pass_type=p0_corner.pass_type,
-                body_part=p0_corner.body_part,
-                play_pattern=p0_corner.play_pattern,
-                recipient=p0_corner.recipient,
-                related_events=p0_corner.related_events,
-                freeze_frame=adjusted_freeze_frame  # Use ADJUSTED freeze frame
+            # Create P1 analysis using CornerP1 class
+            p1_analysis = CornerP1(
+                p0_event_id=p0_corner.event_id,
+                p1_event_id=event_id,
+                p0_team=p0_team,
+                p1_team=p1_team,
+                match_id=match_id,
+                p1_type=p1_event.get('type', ''),
+                p1_timestamp=f"{p1_event.get('minute', 0)}:{p1_event.get('second', 0):02d}",
+                p1_index=p1_event.get('index', 0),
+                freeze_frame=adjusted_freeze_frame
             )
 
-            # Now we have zone counts using the EXACT SAME LOGIC as P0
-            zones_data = temp_corner.zone_counts
-            
-            print(f"\nP1 ZONE COUNTS (using P0 Corner class logic):")
-            for zone_id in range(1, 15):
-                if zone_id in zones_data:
-                    data = zones_data[zone_id]
-                    print(f"  Zone {zone_id}: {data['attackers']} attackers, {data['defenders']} defenders")
+            # Get the analysis as dictionary
+            result = p1_analysis.to_dict()
+            print(f"P1 FINAL COUNTS: {result['P1_n_defenders_in_18yd_box']} defenders in 18yd, {result['P1_n_attackers_in_6yd_box']} attackers in 6yd")
 
-            # Get GK coordinates from the temporary corner
-            gk_x, gk_y = temp_corner._get_goalkeeper_coordinates()
-
-            # Convert zone counts to flat dictionary (P1 version)
-            zone_dict = {}
-            for zone_id, data in zones_data.items():
-                if zone_id == 2:  # Skip redundant zone
-                    continue
-                zone_dict.update({
-                    f'P1_n_att_zone_{zone_id}': data['attackers'],
-                    f'P1_n_def_zone_{zone_id}': data['defenders'],
-                    f'P1_total_n_zone_{zone_id}': data['total']
-                })
-
-            # Use the temporary corner's calculated box counts
-            defenders_18yd = temp_corner.defenders_in_18yd_box
-            attackers_6yd = temp_corner.attackers_in_6yd_box
-            attackers_out_6yd = temp_corner.attackers_out_6yd_box
-
-            print(f"P1 FINAL COUNTS: {defenders_18yd} defenders in 18yd, {attackers_6yd} attackers in 6yd, {attackers_out_6yd} attackers out 6yd")
-
-            return {
-                'P1_event_id': event_id,
-                'P1_type': p1_event.get('type', ''),
-                'P1_timestamp': p1_event.get('timestamp', ''),
-                'P1_index': p1_event.get('index', ''),
-                'P1_team': p1_team,
-                'P1_n_defenders_in_18yd_box': defenders_18yd,
-                'P1_n_attackers_in_6yd_box': attackers_6yd,
-                'P1_n_attackers_out_6yd_box': attackers_out_6yd,
-                'P1_GK_x': gk_x,
-                'P1_GK_y': gk_y,
-                'P1_coordinates_normalized': p0_team != p1_team,
-                **zone_dict
-            }
+            return result
         
         except Exception as e:
             print(f"Error analyzing P1 event {event_id}: {str(e)}")
             traceback.print_exc()
             return None
 
-    def _count_defenders_in_18yd_from_zones(self, zones_data: Dict) -> int:
-        """Count defenders in 18-yard box from zone data (zones 1-13) - CONSISTENT with P0"""
-        total_defenders = 0
-        # Zones 1-13 are within the 18-yard box (zone 14 is outside)
-        for zone_id in range(1, 14):
-            if zone_id in zones_data:
-                total_defenders += zones_data[zone_id]['defenders']
-        return total_defenders
-
-    def _count_attackers_in_6yd_from_zones(self, zones_data: Dict) -> int:
-        """Count attackers in 6-yard box from zone data (zone 2) - CONSISTENT with P0"""
-        if 2 not in zones_data:
-            return 0
-        return zones_data[2]['attackers']
-
-    def _count_attackers_out_6yd_from_zones(self, zones_data: Dict) -> int:
-        """Count attackers outside 6-yard box but in 18-yard box from zone data (zones 1, 3-13) - CONSISTENT with P0"""
-        total_attackers = 0
-        # All zones except zone 2 (6-yard box) and zone 14 (outside 18-yard box)
-        for zone_id in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]:
-            if zone_id in zones_data:
-                total_attackers += zones_data[zone_id]['attackers']
-        return total_attackers
-
-    def validate_p1_vs_p0(self, p0_corners: List[Corner], p1_df: pd.DataFrame):
-        """Validate P1 analysis against P0 baseline"""
-        print("\n" + "="*50)
-        print("P1 vs P0 VALIDATION")
-        print("="*50)
-        
-        validation_results = []
-        
-        for corner in p0_corners:
-            p1_data = p1_df[p1_df['P0_event_id'] == corner.event_id]
-            
-            if p1_data.empty:
-                print(f"Corner {corner.event_id}: No P1 data found")
-                validation_results.append({
-                    'event_id': corner.event_id,
-                    'status': 'NO_P1_DATA',
-                    'p0_defenders': corner.defenders_in_18yd_box,
-                    'p1_defenders': None,
-                    'p0_attackers_6yd': corner.attackers_in_6yd_box,
-                    'p1_attackers_6yd': None,
-                    'difference_defenders': None,
-                    'difference_attackers_6yd': None
-                })
-                continue
-                
-            p1_row = p1_data.iloc[0]
-            
-            p1_defenders = p1_row.get('P1_n_defenders_in_18yd_box', 0)
-            p1_attackers_6yd = p1_row.get('P1_n_attackers_in_6yd_box', 0)
-            
-            diff_defenders = p1_defenders - corner.defenders_in_18yd_box
-            diff_attackers_6yd = p1_attackers_6yd - corner.attackers_in_6yd_box
-            
-            status = "MATCH" if abs(diff_defenders) <= 2 and abs(diff_attackers_6yd) <= 1 else "MISMATCH"
-            
-            print(f"\nCorner {corner.event_id}: {status}")
-            print(f"  Defenders in 18yd: P0={corner.defenders_in_18yd_box}, P1={p1_defenders}, Diff={diff_defenders}")
-            print(f"  Attackers in 6yd:  P0={corner.attackers_in_6yd_box}, P1={p1_attackers_6yd}, Diff={diff_attackers_6yd}")
-            
-            validation_results.append({
-                'event_id': corner.event_id,
-                'status': status,
-                'p0_defenders': corner.defenders_in_18yd_box,
-                'p1_defenders': p1_defenders,
-                'p0_attackers_6yd': corner.attackers_in_6yd_box,
-                'p1_attackers_6yd': p1_attackers_6yd,
-                'difference_defenders': diff_defenders,
-                'difference_attackers_6yd': diff_attackers_6yd
-            })
-        
-        # Summary statistics
-        if validation_results:
-            total_corners = len(validation_results)
-            matches = sum(1 for r in validation_results if r['status'] == 'MATCH')
-            mismatches = sum(1 for r in validation_results if r['status'] == 'MISMATCH')
-            no_data = sum(1 for r in validation_results if r['status'] == 'NO_P1_DATA')
-            
-            print(f"\nSUMMARY:")
-            print(f"Total corners: {total_corners}")
-            print(f"Matches: {matches} ({matches/total_corners*100:.1f}%)")
-            print(f"Mismatches: {mismatches} ({mismatches/total_corners*100:.1f}%)")
-            print(f"No P1 data: {no_data} ({no_data/total_corners*100:.1f}%)")
-        
-        return pd.DataFrame(validation_results)
-    
-    def analyze_p1_events(self, processed_events_df: pd.DataFrame, p0_corners: List[Corner]) -> pd.DataFrame:
+    def analyze_p1_events(self, processed_events_df: pd.DataFrame, p0_corners: List[CornerP0]) -> pd.DataFrame:
         """
         Analyze P1 events for all given P0 corners
         
         Args:
             processed_events_df: Full processed events DataFrame (ALL events, not just corners)
-            p0_corners: List of Corner objects from original analysis
+            p0_corners: List of CornerP0 objects from original analysis
             
         Returns:
             DataFrame with P1 analysis linked to P0 events
@@ -414,7 +305,7 @@ class CornerP1Analyzer:
         
         self.p1_analysis_data = []
         
-        # Create a mapping from event_id to Corner object for quick lookup
+        # Create a mapping from event_id to CornerP0 object for quick lookup
         p0_corner_map = {corner.event_id: corner for corner in p0_corners}
         
         # Get all P0 events from processed data for reference
@@ -441,7 +332,7 @@ class CornerP1Analyzer:
                 if p1_event is not None:
                     p1_events_found += 1
                     
-                    # Analyze the P1 event using the simplified approach
+                    # Analyze the P1 event
                     p1_analysis = self._analyze_p1_event(p1_event, p0_corner_map[p0_event_id])
                     if p1_analysis:
                         p1_analysis['P0_event_id'] = p0_event_id  # Link to P0
@@ -459,9 +350,6 @@ class CornerP1Analyzer:
             p1_df = pd.DataFrame(self.p1_analysis_data)
             print(f"Successfully analyzed {len(p1_df)} P1 events with freeze frames")
             
-            # Run validation
-            self.validate_p1_vs_p0(p0_corners, p1_df)
-            
             return p1_df
         else:
             print("No P1 data was successfully processed")
@@ -472,7 +360,7 @@ class CornerP1Analyzer:
         Merge P0 and P1 DataFrames
         
         Args:
-            p0_df: DataFrame from CornerAnalyzer (P0 data)
+            p0_df: DataFrame from CornerAnalyzerP0 (P0 data)
             p1_df: DataFrame from analyze_p1_events (P1 data)
             
         Returns:
@@ -501,3 +389,14 @@ class CornerP1Analyzer:
         print(f"Corners with P1 data: {combined_df['P1_event_id'].notna().sum()}")
         
         return combined_df
+
+    def save_to_csv(self, filename: str = 'p1_analysis.csv') -> Optional[str]:
+        """Save P1 analysis to CSV file"""
+        if self.p1_analysis_data:
+            p1_df = pd.DataFrame(self.p1_analysis_data)
+            p1_df.to_csv(filename, index=False, encoding='utf-8')
+            print(f"P1 analysis saved to: {filename}")
+            return filename
+        else:
+            print("No P1 analysis data to save")
+            return None

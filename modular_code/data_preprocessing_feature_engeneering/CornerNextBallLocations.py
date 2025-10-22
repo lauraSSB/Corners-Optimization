@@ -1,7 +1,7 @@
 import pandas as pd
 import warnings
 from typing import List, Dict, Optional, Tuple, Any
-from Corner import Corner, corner_zones, _is_in_box
+from CornerP0 import corner_zones, _is_in_box, FIELD_WIDTH, FIELD_HEIGHT
 from DataDownloader import DataDownloader
 
 warnings.filterwarnings('ignore')

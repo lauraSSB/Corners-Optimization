@@ -10,8 +10,8 @@ from DataDownloader import DataDownloader
 from GameStateCalculator import GameStateCalculator
 from TwentySecondMetrics import TwentySecondMetrics
 from TimeToCorner import TimeToCorner
-from CornerAnalyzer import CornerAnalyzer
-from CornerP1Analyzer import CornerP1Analyzer
+from CornerAnalyzerP0 import CornerAnalyzerP0
+from CornerAnalyzerP1 import CornerAnalyzerP1
 from CornerNextBallLocations import CornerNextBallLocations
 
 warnings.filterwarnings('ignore')
@@ -73,8 +73,8 @@ def main():
         game_state_calculator = GameStateCalculator()
         twenty_second_metrics = TwentySecondMetrics()
         time_to_corner = TimeToCorner()
-        corner_analyzer = CornerAnalyzer(downloader)
-        p1_analyzer = CornerP1Analyzer(downloader)
+        corner_analyzer_p0 = CornerAnalyzerP0(downloader)
+        corner_analyzer_p1 = CornerAnalyzerP1(downloader)
         next_ball_locations = CornerNextBallLocations(downloader)
 
         comps = downloader.get_competitions()
@@ -84,7 +84,7 @@ def main():
         matches_df = downloader.get_matches(comp_id, season_id)
         all_corner_analysis = []
 
-        max_matches = min(5,len(matches_df))
+        max_matches = min(10,len(matches_df))
 
         print(f"Processing {max_matches} matches...")
 
@@ -117,20 +117,27 @@ def main():
                 events_with_corner_time = time_to_corner.calculate_corner_execution_time(events_with_20s_metrics)
 
                 # Perform P0 corner analysis on this match's data
-                p0_df = corner_analyzer.analyze_corners_from_processed_data(events_with_corner_time)
+                p0_df = corner_analyzer_p0.analyze_corners_from_processed_data(events_with_corner_time)
                 
                 if not p0_df.empty:
-                    # Perform P1 analysis for this match
-                    p1_df = p1_analyzer.analyze_p1_events(events_with_corner_time, corner_analyzer.corners_data)
+                    # Perform P1 analysis for this match - FIXED: use corner_analyzer_p0.corners_data
+                    p1_df = corner_analyzer_p1.analyze_p1_events(events_with_corner_time, corner_analyzer_p0.corners_data)
 
-                    combined_df = p1_analyzer.merge_p0_p1_data(p0_df, p1_df)
+                    # Merge P0 and P1 data
+                    if p1_df is not None and not p1_df.empty:
+                        combined_df = corner_analyzer_p1.merge_p0_p1_data(p0_df, p1_df)
+                    else:
+                        combined_df = p0_df
+                        print("No P1 data available for this match")
 
                     # Perform next five ball receipts actions analysis for this match
                     next_ball_locations_df = next_ball_locations.find_next_ball_receipts(combined_df, events_df)
 
-                    final_df = pd.merge(combined_df, next_ball_locations_df, on="event_id", how="left")
+                    if not next_ball_locations_df.empty:
+                        final_df = pd.merge(combined_df, next_ball_locations_df, on="event_id", how="left")
+                    else:
+                        final_df = combined_df
 
-                    # Merge P0 and P1 data
                     all_corner_analysis.append(final_df)
                     
                     print(f"Found {len(p0_df)} corner events, {len(p1_df) if p1_df is not None else 0} P1 events")
@@ -141,6 +148,8 @@ def main():
 
             except Exception as e:
                 print(f"❌ Error processing events for match {match_id}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 failed_matches += 1
                 continue
 

@@ -52,7 +52,7 @@ def corner_zones(corner: str = "Right") -> List[Tuple[float, float, float, float
         (102, 108, 50, 62, "Short return – far"),    # 11
         (114, 120, 18, 30, "Short return – central"),   # 12
         (114, 120, 50, 62, "Far-post low (6yd, mid-height)"),    # 13
-        (102, 121, -1, 18, "Advanced wide return (touchline channel)"),   # 14
+        (102, 122, -2, 18, "Advanced wide return (touchline channel)"),   # 14
     ]
 
     # Only Left corners need vertical mirroring
@@ -67,7 +67,7 @@ def _is_in_box(x: float, y: float, x_min: float, x_max: float, y_min: float, y_m
     return x_min <= x <= x_max and y_min <= y <= y_max
 
 @dataclass
-class Corner:
+class CornerP0:
     '''Optimized Corner class with proper zone mirroring for Right/Left corners only'''
 
     # Raw event fields
