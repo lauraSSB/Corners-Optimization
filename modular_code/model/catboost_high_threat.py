@@ -20,7 +20,8 @@ USAGE (example):
   --tuning_method bayesian \
   --n_trials 50 \
   --export_shap_full \
-  --export_shap_compact
+  --export_shap_compact \
+  --plot_pr_curve
 """
 
 import argparse
@@ -29,12 +30,14 @@ import math
 import numpy as np
 import pandas as pd
 import optuna
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 import warnings
 from typing import List, Tuple, Any
 
 from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve, f1_score, classification_report, confusion_matrix
+from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve, f1_score, classification_report, confusion_matrix, precision_score, recall_score
 
 from catboost import CatBoostClassifier, Pool
 
@@ -81,6 +84,84 @@ def evaluate(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict:
         "confusion_matrix": cm.tolist(),
         "classification_report": rep
     }
+
+def plot_precision_recall_curve(y_true: np.ndarray, y_prob: np.ndarray, threshold: float, save_path: str = "precision_recall_curve.png"):
+    """Plot precision-recall curve with optimal threshold and performance metrics"""
+    precision, recall, thresholds = precision_recall_curve(y_true, y_prob)
+    average_precision = average_precision_score(y_true, y_prob)
+    
+    # Calculate F1 for each threshold
+    f1_scores = 2 * (precision[:-1] * recall[:-1]) / (precision[:-1] + recall[:-1] + 1e-8)
+    
+    # Create the plot
+    plt.figure(figsize=(10, 8))
+    
+    # Plot PR curve
+    plt.subplot(2, 1, 1)
+    plt.plot(recall, precision, linewidth=2, label=f'PR curve (AP = {average_precision:.3f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.ylim([0.0, 1.05])
+    plt.xlim([0.0, 1.0])
+    plt.title('Precision-Recall Curve')
+    plt.legend(loc="lower left")
+    plt.grid(True, alpha=0.3)
+    
+    # Plot F1 scores and metrics
+    plt.subplot(2, 1, 2)
+    
+    # Find the point on PR curve corresponding to current threshold
+    current_preds = (y_prob >= threshold).astype(int)
+    current_precision = precision_score(y_true, current_preds, zero_division=0)
+    current_recall = recall_score(y_true, current_preds, zero_division=0)
+    current_f1 = f1_score(y_true, current_preds, zero_division=0)
+    
+    # Plot F1 vs threshold
+    plt.plot(thresholds, f1_scores, 'g-', linewidth=2, label='F1 Score')
+    plt.axvline(x=threshold, color='r', linestyle='--', linewidth=2, 
+                label=f'Optimal threshold (F1={current_f1:.3f})')
+    
+    # Find threshold that maximizes F1
+    best_f1_idx = np.argmax(f1_scores)
+    best_threshold = thresholds[best_f1_idx]
+    best_f1 = f1_scores[best_f1_idx]
+    
+    plt.axvline(x=best_threshold, color='orange', linestyle='--', linewidth=2, 
+                label=f'Max F1 threshold (F1={best_f1:.3f})')
+    
+    plt.xlabel('Threshold')
+    plt.ylabel('F1 Score')
+    plt.ylim([0.0, 1.05])
+    plt.xlim([0.0, 1.0])
+    plt.title('F1 Score vs Classification Threshold')
+    plt.legend(loc="lower left")
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Print detailed comparison
+    print(f"\n=== THRESHOLD ANALYSIS ===")
+    print(f"Current threshold: {threshold:.3f}")
+    print(f"Current - Precision: {current_precision:.3f}, Recall: {current_recall:.3f}, F1: {current_f1:.3f}")
+    print(f"Max F1 threshold: {best_threshold:.3f}")
+    
+    best_preds = (y_prob >= best_threshold).astype(int)
+    best_precision = precision_score(y_true, best_preds, zero_division=0)
+    best_recall = recall_score(y_true, best_preds, zero_division=0)
+    
+    print(f"Max F1 - Precision: {best_precision:.3f}, Recall: {best_recall:.3f}, F1: {best_f1:.3f}")
+    
+    # Calculate improvements
+    precision_diff = best_precision - current_precision
+    recall_diff = best_recall - current_recall
+    f1_diff = best_f1 - current_f1
+    
+    print(f"\nImprovements with max F1 threshold:")
+    print(f"Precision: {precision_diff:+.3f}, Recall: {recall_diff:+.3f}, F1: {f1_diff:+.3f}")
+    
+    return best_threshold, best_f1
 
 def objective_catboost_grid_search(trial, train_pool, val_pool, feature_cols, iterations, es_rounds, random_state):
     """Objective function for CatBoost's native grid search"""
@@ -212,6 +293,7 @@ def main():
     parser.add_argument("--export_shap_full", action="store_true", help="Export per-sample SHAP for ALL features (validation set)")
     parser.add_argument("--export_shap_compact", action="store_true", help="Export per-sample SHAP for top-K features (validation set)")
     parser.add_argument("--compact_top_k", type=int, default=15, help="K for compact SHAP export")
+    parser.add_argument("--plot_pr_curve", action="store_true", help="Generate precision-recall curve plot")
     args = parser.parse_args()
 
     df = pd.read_csv(args.data)
@@ -376,9 +458,20 @@ def main():
     # Evaluate
     val_prob = model.predict_proba(val_pool)[:, 1]
     best_t, best_f1 = pick_best_threshold_by_f1(y_val.values, val_prob)
-    metrics = evaluate(y_val.values, val_prob, best_t)
+    
+    # Add precision-recall curve plotting
+    print("\nGenerating precision-recall curve...")
+    best_threshold_pr, best_f1_pr = plot_precision_recall_curve(y_val.values, val_prob, best_t)
+    
+    # Update metrics if PR curve found a better threshold
+    if best_f1_pr > best_f1:
+        print(f"Updating to PR-optimized threshold: {best_threshold_pr:.3f} (F1: {best_f1_pr:.3f})")
+        best_t = best_threshold_pr
+        metrics = evaluate(y_val.values, val_prob, best_t)
+    else:
+        metrics = evaluate(y_val.values, val_prob, best_t)
 
-     # Add tuning info to metrics
+    # Add tuning info to metrics
     metrics["tuning_method"] = args.tuning_method
     if best_params:
         metrics["best_params"] = best_params
